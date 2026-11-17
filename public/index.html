@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#0c0e15" />
+    <title>온술바 — 로그인 없이 바로 앉는 온라인 혼술바</title>
+    <meta name="description" content="접속하면 바로 자리에 앉아 옆자리 손님과 채팅·통화로 한잔하는 온라인 혼술바." />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍶</text></svg>" />
+    <link rel="stylesheet" href="/vendor/pretendard/pretendardvariable-dynamic-subset.css" />
+    <link rel="stylesheet" href="/css/style.css" />
+    <script type="importmap">
+      { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+    </script>
+  </head>
+  <body data-phase="lobby">
+    <div id="app">
+      <div id="stage">
+        <div id="labels" aria-hidden="true"></div>
+        <div id="hint" hidden></div>
+      </div>
+
+      <header id="topbar">
+        <div class="brand">온술바</div>
+        <div class="stats" id="stats" aria-live="polite">
+          <span class="stat m"><i></i>남 <b id="countM">0</b></span>
+          <span class="stat f"><i></i>여 <b id="countF">0</b></span>
+          <span class="stat free">빈자리 <b id="countFree">24</b></span>
+          <span class="stat wait" id="waitStat" hidden>대기 <b id="countWait">0</b></span>
+        </div>
+        <div class="top-actions">
+          <button class="ghost" id="viewBtn" type="button" hidden>전체 보기</button>
+          <button class="ghost" id="leaveBtn" type="button" hidden>나가기</button>
+        </div>
+      </header>
+
+      <!-- 입장 카드: 로그인 없이 성별만 고르면 바로 착석 -->
+      <section id="entry" class="card" aria-labelledby="entryTitle">
+        <p class="eyebrow">로그인 없이 · 지금 바로</p>
+        <h1 id="entryTitle">오늘은 여기서 <em>한잔</em> 어때요?</h1>
+        <p class="lead">들어오면 바로 자리에 앉아요. 옆자리 손님과 채팅하고, 서로 원하면 통화도 할 수 있어요.</p>
+
+        <form id="entryForm" autocomplete="off">
+          <div class="field">
+            <span>성별 <small>남녀 자리를 번갈아 배치해 성비를 맞춰 드려요</small></span>
+            <div class="segmented" id="genderSeg" role="radiogroup" aria-label="성별">
+              <button type="button" role="radio" aria-checked="false" data-gender="m">남성</button>
+              <button type="button" role="radio" aria-checked="false" data-gender="f">여성</button>
+            </div>
+          </div>
+
+          <details id="custom">
+            <summary><i class="avatar-dot" id="sumDot"></i><span id="sumText"></span><em>바꾸기</em></summary>
+          <label class="field">
+            <span>닉네임</span>
+            <div class="nick">
+              <input id="nick" maxlength="12" placeholder="닉네임" enterkeyhint="done" />
+              <button type="button" id="reroll" class="icon-btn" aria-label="닉네임 다시 뽑기">🎲</button>
+            </div>
+          </label>
+
+          <div class="field">
+            <span>오늘의 한잔</span>
+            <div class="chips" id="drinkChips" role="radiogroup" aria-label="오늘의 한잔"></div>
+          </div>
+
+          <div class="field">
+            <span>옷 색깔</span>
+            <div class="swatches" id="swatches" role="radiogroup" aria-label="옷 색깔"></div>
+          </div>
+
+          </details>
+
+          <button class="primary" id="enterBtn" type="submit" disabled>성별을 선택해 주세요</button>
+          <p class="fine">만 19세 이상만 이용할 수 있어요 · 통화는 상대가 수락해야 연결돼요</p>
+        </form>
+      </section>
+
+      <!-- 성비 대기 -->
+      <section id="waiting" class="card" hidden aria-live="polite">
+        <p class="eyebrow">입장 대기 중</p>
+        <h1>내 순서 <em id="queuePos">1</em>번째</h1>
+        <p class="lead" id="queueWhy">성비를 맞추는 중이에요.</p>
+        <div class="ratio" aria-hidden="true"><div class="ratio-m" id="ratioM"></div><div class="ratio-f" id="ratioF"></div></div>
+        <div class="ratio-legend"><span>남 <b id="waitM">0</b>명</span><span>여 <b id="waitF">0</b>명</span></div>
+        <p class="fine">자리가 나면 자동으로 앉혀 드려요. 이 화면을 켜 두세요.</p>
+        <button class="secondary" id="cancelWait" type="button">대기 취소</button>
+      </section>
+
+      <!-- 착석 후: 대화 도크 -->
+      <section id="dock" hidden>
+        <div id="callbar" hidden>
+          <span class="call-dot"></span>
+          <span id="callText">통화 중</span>
+          <span id="callTime"></span>
+          <button type="button" id="muteBtn" class="pill" hidden>음소거</button>
+          <button type="button" id="hangBtn" class="pill danger">끊기</button>
+        </div>
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" data-tab="bar" aria-selected="true"><span class="tab-label">우리 바</span><i class="unread" hidden></i></button>
+          <button type="button" role="tab" data-tab="left" aria-selected="false"><span class="tab-label">왼쪽 자리</span><i class="unread" hidden></i></button>
+          <button type="button" role="tab" data-tab="right" aria-selected="false"><span class="tab-label">오른쪽 자리</span><i class="unread" hidden></i></button>
+        </div>
+        <div id="log" role="log" aria-live="polite"></div>
+        <form id="composer" autocomplete="off">
+          <button type="button" id="callBtn" class="icon-btn call" aria-label="통화 걸기" hidden>📞</button>
+          <input id="msg" maxlength="200" placeholder="우리 바 손님들에게 한마디" enterkeyhint="send" />
+          <button type="submit" class="send" aria-label="보내기">↑</button>
+        </form>
+        <div class="actions">
+          <button type="button" id="cheersBtn">🍻 건배</button>
+          <button type="button" id="orderBtn">🍶 한 잔 더</button>
+          <button type="button" id="moveBtn">💺 자리 옮기기</button>
+        </div>
+        <div id="orderMenu" class="popover" hidden></div>
+      </section>
+
+      <!-- 손님을 눌렀을 때 -->
+      <div id="profile" class="popcard" hidden>
+        <div class="who"><i class="avatar-dot" id="pfDot"></i><div><b id="pfName"></b><small id="pfMeta"></small></div></div>
+        <div class="row" id="pfActions"></div>
+      </div>
+
+      <!-- 걸려 온 통화 -->
+      <div id="incoming" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="incTitle">
+        <div class="modal-card">
+          <div class="ringer">📞</div>
+          <h2 id="incTitle"></h2>
+          <p>수락하면 마이크가 켜지고 음성 통화가 시작돼요.</p>
+          <div class="row">
+            <button type="button" class="secondary" id="declineBtn">거절</button>
+            <button type="button" class="primary" id="acceptBtn">수락</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="toast" role="status" aria-live="polite" hidden></div>
+      <div id="offline" hidden>연결이 끊겼어요. 다시 연결하는 중…</div>
+      <audio id="remoteAudio" autoplay playsinline></audio>
+    </div>
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>
