@@ -16,7 +16,12 @@ export class Voice extends EventTarget {
     net.on('call', (m) => this.#onCall(m));
     net.on('rtc', (m) => this.#onRtc(m));
     net.on('status', (s) => {
-      if (!s.connected && this.state !== 'idle') this.#finish('disconnected');
+      // 연결된 통화는 P2P라 서버 연결이 잠깐 끊겨도 유지한다
+      if (!s.connected && this.state !== 'idle' && this.state !== 'active') this.#finish('disconnected');
+    });
+    net.on('welcome', (m) => {
+      // 다시 연결됐는데 서버가 이 통화를 모르면(자리 만료·서버 재시작) 정리
+      if (this.state === 'active' && m.callPeer !== this.peerId) this.#finish('disconnected');
     });
   }
 

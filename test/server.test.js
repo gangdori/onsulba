@@ -160,6 +160,33 @@ test('재접속하면 자리를 유지하고, 오래 끊기면 자리가 비워�
   }
 });
 
+test('통화 중 연결이 잠깐 끊겨도 통화는 유지되고, 돌아오지 않으면 끊긴다', async () => {
+  const app = await boot({ graceMs: 200 });
+  try {
+    const a = await enter(app.url, 'm', 'a');
+    await a.type('seated');
+    const b = await enter(app.url, 'f', 'b');
+    await b.type('seated');
+    a.send({ type: 'call', action: 'invite', to: b.me.id });
+    await b.next((m) => m.type === 'call' && m.action === 'invite');
+    b.send({ type: 'call', action: 'accept', to: a.me.id });
+    await a.next((m) => m.type === 'call' && m.action === 'accept');
+
+    a.ws.close();
+    await new Promise((r) => setTimeout(r, 50));
+    const again = connect(app.url, a.session);
+    assert.equal((await again.ready).callPeer, b.me.id, '재접속하면 통화 상대가 그대로');
+    again.send({ type: 'rtc', to: b.me.id, data: { candidate: 'x' } });
+    assert.deepEqual((await b.type('rtc')).data, { candidate: 'x' });
+
+    again.ws.close();
+    const end = await b.next((m) => m.type === 'call' && m.action === 'end');
+    assert.equal(end.reason, 'left');
+  } finally {
+    await app.close();
+  }
+});
+
 test('잘못된 입력은 무시되고 서버가 죽지 않는다', async () => {
   const app = await boot();
   try {

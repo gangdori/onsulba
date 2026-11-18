@@ -173,9 +173,17 @@ function join() {
 }
 
 // ---------- 서버 이벤트 ----------
+let offlineTimer;
 net.on('status', ({ connected, replaced }) => {
-  $('offline').hidden = connected;
-  if (replaced) $('offline').textContent = '다른 탭에서 접속해 이 탭의 연결이 종료됐어요.';
+  clearTimeout(offlineTimer);
+  if (connected) $('offline').hidden = true;
+  else if (replaced) {
+    $('offline').textContent = '다른 탭에서 접속해 이 탭의 연결이 종료됐어요.';
+    $('offline').hidden = false;
+  } else {
+    // 서버가 주기적으로 연결을 갈아 끼우는 짧은 끊김은 알리지 않는다
+    offlineTimer = setTimeout(() => ($('offline').hidden = false), 2500);
+  }
 });
 
 net.on('welcome', (m) => {

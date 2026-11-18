@@ -321,6 +321,7 @@ export function createApp(options = {}) {
       status: client.status,
       seatId: bar.seatOf(client.id),
       profile: client.profile,
+      callPeer: client.call?.state === 'active' ? client.call.peer : null,
       iceServers,
       maxGap,
     });
@@ -361,11 +362,12 @@ export function createApp(options = {}) {
       const client = ws.client;
       if (!client || client.ws !== ws) return;
       client.ws = null;
-      const wasActive = endCall(client, 'disconnected');
+      // 연결된 통화는 음성이 P2P라 신호 연결이 잠깐 끊겨도 이어진다. 울리는 중인 통화만 정리.
+      if (client.call?.state !== 'active') endCall(client, 'disconnected');
       if (client.status === 'lobby') return removeClient(client);
-      // 잠깐의 끊김은 자리를 지켜 준다
+      // 잠깐의 끊김은 자리를 지켜 준다 (돌아오지 않으면 removeClient 가 통화도 끊는다)
       client.graceTimer = setTimeout(() => removeClient(client), graceMs);
-      if (client.status === 'seated' || wasActive) broadcastState();
+      if (client.status === 'seated') broadcastState();
     });
   });
 

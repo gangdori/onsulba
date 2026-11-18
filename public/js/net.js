@@ -9,6 +9,7 @@ export class Net extends EventTarget {
     }
     this.retry = 0;
     this.connected = false;
+    this.outbox = []; // 재연결 중에 보낸 메시지는 잠시 모아 둔다
     this.#open();
   }
 
@@ -31,6 +32,7 @@ export class Net extends EventTarget {
         this.dispatchEvent(new CustomEvent('status', { detail: { connected: true } }));
       }
       this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
+      if (msg.type === 'welcome') for (const m of this.outbox.splice(0)) this.send(m);
     };
     ws.onclose = (e) => {
       const was = this.connected;
@@ -41,7 +43,8 @@ export class Net extends EventTarget {
         return;
       }
       if (was || this.retry === 0) this.dispatchEvent(new CustomEvent('status', { detail: { connected: false } }));
-      const delay = Math.min(8000, 500 * 2 ** this.retry++);
+      const delay = this.retry === 0 ? 150 : Math.min(8000, 400 * 2 ** this.retry);
+      this.retry++;
       setTimeout(() => this.#open(), delay);
     };
   }
@@ -51,6 +54,7 @@ export class Net extends EventTarget {
   }
 
   send(msg) {
-    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    if (this.ws.readyState === WebSocket.OPEN && this.connected) this.ws.send(JSON.stringify(msg));
+    else if (['chat', 'rtc', 'order', 'call'].includes(msg.type) && this.outbox.length < 30) this.outbox.push(msg);
   }
 }
