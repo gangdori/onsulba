@@ -29,6 +29,7 @@ export function createApp(options = {}) {
     ringMs = 30000,
     maxClients = Number(process.env.MAX_CLIENTS ?? 500),
     iceServers = process.env.ICE_SERVERS ? JSON.parse(process.env.ICE_SERVERS) : DEFAULT_ICE,
+    app = express(),
   } = options;
 
   const bar = new Bar({ maxGap });
@@ -36,7 +37,6 @@ export function createApp(options = {}) {
   const byId = new Map();
 
   // ---------- HTTP ----------
-  const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
