@@ -1,173 +1,26 @@
-// 3D 바 공간: 지그재그(ㄹ자) 카운터에 튀어나온 바 3개, 가운데 통로를 오가는 직원, 앉은 손님들
-import * as THREE from 'three';
+// 3D 연출 총괄: 골목 → 엘리베이터 → 루프탑 로비 → 바. 카메라, 손님(걷기/앉기), 직원, 이름표를 움직인다.
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GEO, SEATS, SEAT_BY_ID, BAR_COUNT, barCenterX, AVATAR_COLORS } from '/shared/layout.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { THREE, hash, ease, clamp01, G, M, TOP_Y, mesh, buildPerson, buildDrink, setPose, walkCycle } from './kit.js';
+import { buildCity, GROUND_Y, BUILDING } from './world-city.js';
+import { buildElevator } from './world-elevator.js';
+import { buildRoof } from './world-roof.js';
+import { GEO, SEATS, SEAT_BY_ID, BAR_COUNT, barCenterX, AVATAR_COLORS, NAV, QUEUE_VISIBLE, queueSlot, walkRoute } from '/shared/layout.js';
 
-const TOP_Y = GEO.counterHeight + 0.07; // 카운터 상판 윗면
-const BG = 0x0c0e15;
-const SKIN = ['#f3cfae', '#e9bb92', '#dba77c', '#f7dcc4'];
-const HAIR = ['#231c19', '#3a2a21', '#5b3c28', '#1b1c24', '#7b5b3c', '#44302a'];
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const FOV = 42;
+const WALK_SPEED = 2.3; // 손님 걸음 (m/s)
+const FACE_DOOR = -Math.PI / 2; // 줄 선 사람은 문(-x) 쪽을 본다
 
-const hash = (s) => {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
+// 정해진 카메라 자리들
+const SHOT = {
+  streetUp: { pos: V(1.7, GROUND_Y + 1.5, BUILDING.z1 + 10.2), look: V(0.4, GROUND_Y + 46, BUILDING.z1), fov: 50 },
+  street: { pos: V(1.7, GROUND_Y + 1.5, BUILDING.z1 + 10.2), look: V(0.25, GROUND_Y + 2.25, BUILDING.z1), fov: 50 },
+  doorway: { pos: V(0.15, GROUND_Y + 1.5, BUILDING.z1 + 2.2), look: V(0, GROUND_Y + 1.45, BUILDING.z1 - 2), fov: 50 },
+  cabView: { pos: V(-0.75, 1.5, 0.35), look: V(1.4, 1.1, -0.3), fov: 64 }, // 유리 너머 도시
+  cabDoor: { pos: V(0.6, 1.5, 0), look: V(-1.2, 1.35, 0), fov: 64 }, // 문 쪽
+  stepOut: { pos: V(17.5, 1.62, NAV.doorZ), look: V(13.2, 1.2, NAV.doorZ), fov: 52 },
 };
-const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
-const std = (color, opts = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0, ...opts });
-
-function canvasTexture(w, h, draw) {
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  draw(c.getContext('2d'), w, h);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  return tex;
-}
-
-// ---------- 공용 지오메트리/머티리얼 ----------
-const G = {
-  torso: new THREE.CapsuleGeometry(0.19, 0.26, 6, 14),
-  head: new THREE.SphereGeometry(0.175, 20, 16),
-  hairCap: new THREE.SphereGeometry(0.188, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.56),
-  hairBob: new THREE.SphereGeometry(0.2, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.72),
-  bun: new THREE.SphereGeometry(0.075, 12, 10),
-  eye: new THREE.SphereGeometry(0.018, 8, 8),
-  arm: new THREE.CapsuleGeometry(0.052, 0.24, 4, 8),
-  thigh: new THREE.CapsuleGeometry(0.07, 0.22, 4, 8),
-  shin: new THREE.CapsuleGeometry(0.06, 0.3, 4, 8),
-  leg: new THREE.CapsuleGeometry(0.075, 0.5, 4, 8),
-  stoolSeat: new THREE.CylinderGeometry(0.2, 0.18, 0.08, 20),
-  stoolPole: new THREE.CylinderGeometry(0.025, 0.025, 0.66, 8),
-  stoolBase: new THREE.CylinderGeometry(0.19, 0.21, 0.03, 20),
-  stoolRing: new THREE.TorusGeometry(0.15, 0.012, 6, 20),
-  ring: new THREE.RingGeometry(0.3, 0.38, 40),
-  hit: new THREE.CylinderGeometry(0.36, 0.36, 1.9, 8),
-};
-const M = {
-  eye: std('#1d1a1a', { roughness: 0.4 }),
-  pants: std('#2a2e3a'),
-  metal: std('#2b2c31', { roughness: 0.35, metalness: 0.8 }),
-  brass: std('#c79a55', { roughness: 0.3, metalness: 0.9 }),
-  glass: new THREE.MeshStandardMaterial({ color: '#ffffff', transparent: true, opacity: 0.26, roughness: 0.08, depthWrite: false }),
-  cushion: { m: std('#3f628f', { roughness: 0.6 }), f: std('#b4566c', { roughness: 0.6 }) },
-  staffShirt: std('#c4c0b8'),
-  apron: std('#191a1f'),
-};
-const matCache = new Map();
-const colorMat = (hex, opts) => {
-  const key = hex + JSON.stringify(opts || {});
-  if (!matCache.has(key)) matCache.set(key, std(hex, opts));
-  return matCache.get(key);
-};
-
-function mesh(geo, mat, x = 0, y = 0, z = 0, shadow = true) {
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(x, y, z);
-  m.castShadow = shadow;
-  return m;
-}
-
-// ---------- 사람(손님/직원) ----------
-function buildPerson({ color, seed, standing = false, staff = false }) {
-  const group = new THREE.Group();
-  const body = new THREE.Group(); // 숨쉬기/끄덕임 애니메이션용
-  group.add(body);
-  const baseY = standing ? 0.78 : GEO.seatHeight + 0.04;
-  const shirt = staff ? M.staffShirt : colorMat(color);
-  const skin = colorMat(SKIN[seed % SKIN.length], { roughness: 0.6 });
-  const hair = colorMat(HAIR[(seed >>> 3) % HAIR.length], { roughness: 0.9 });
-
-  const torso = mesh(G.torso, shirt, 0, baseY + 0.32, 0);
-  torso.rotation.x = standing ? 0 : 0.1;
-  const head = new THREE.Group();
-  head.position.set(0, baseY + 0.8, standing ? 0 : 0.035);
-  head.add(mesh(G.head, skin));
-  const style = (seed >>> 6) % 3;
-  const hairMesh = mesh(style === 1 ? G.hairBob : G.hairCap, hair);
-  hairMesh.rotation.x = -0.32;
-  head.add(hairMesh);
-  if (style === 2) head.add(mesh(G.bun, hair, 0, 0.19, -0.06));
-  head.add(mesh(G.eye, M.eye, -0.062, 0.01, 0.162, false), mesh(G.eye, M.eye, 0.062, 0.01, 0.162, false));
-
-  const arms = [-1, 1].map((side) => {
-    const pivot = new THREE.Group(); // 어깨
-    pivot.position.set(side * 0.225, baseY + 0.5, 0.02);
-    const arm = mesh(G.arm, staff ? M.staffShirt : shirt, 0, -0.16, 0);
-    pivot.add(arm);
-    pivot.rotation.x = standing ? -0.08 : -1.18; // 앉으면 팔을 카운터에 올림
-    pivot.rotation.z = side * (standing ? 0.08 : -0.12);
-    return pivot;
-  });
-  body.add(torso, head, ...arms);
-
-  if (standing) {
-    group.add(mesh(G.leg, M.pants, -0.09, 0.4, 0), mesh(G.leg, M.pants, 0.09, 0.4, 0));
-  } else {
-    for (const side of [-1, 1]) {
-      const thigh = mesh(G.thigh, M.pants, side * 0.09, GEO.seatHeight + 0.08, 0.15);
-      thigh.rotation.x = Math.PI / 2;
-      group.add(thigh, mesh(G.shin, M.pants, side * 0.09, GEO.seatHeight - 0.14, 0.31));
-    }
-  }
-  if (staff) {
-    body.add(mesh(new THREE.BoxGeometry(0.36, 0.5, 0.03), M.apron, 0, baseY + 0.16, 0.185));
-    body.add(mesh(new THREE.BoxGeometry(0.1, 0.045, 0.03), colorMat('#b8323a'), 0, baseY + 0.6, 0.175));
-  }
-  return { group, body, head, arms };
-}
-
-// ---------- 음료 ----------
-function buildDrink(kind) {
-  const g = new THREE.Group();
-  const cyl = (r, h, mat, x = 0, y = h / 2, z = 0, r2 = r) => {
-    const m = mesh(new THREE.CylinderGeometry(r2, r, h, 14), mat, x, y, z, false);
-    g.add(m);
-    return m;
-  };
-  const liquid = (hex, opacity = 0.9) => new THREE.MeshStandardMaterial({ color: hex, roughness: 0.25, transparent: opacity < 1, opacity });
-  if (kind === 'soju') {
-    const green = liquid('#3fae70', 0.82);
-    cyl(0.034, 0.17, green, -0.05);
-    cyl(0.03, 0.035, green, -0.05, 0.187, 0, 0.014);
-    cyl(0.014, 0.05, green, -0.05, 0.23);
-    cyl(0.016, 0.014, colorMat('#d8d8dc', { metalness: 0.6, roughness: 0.4 }), -0.05, 0.262);
-    cyl(0.02, 0.05, M.glass, 0.06, 0.025, 0, 0.026);
-    cyl(0.017, 0.03, liquid('#eef6f2', 0.6), 0.06, 0.017, 0, 0.021);
-  } else if (kind === 'beer') {
-    cyl(0.05, 0.13, liquid('#e3a22c', 0.95));
-    cyl(0.052, 0.03, colorMat('#fff8ea', { roughness: 1 }), 0, 0.145);
-    const handle = mesh(new THREE.TorusGeometry(0.035, 0.009, 6, 12, Math.PI), M.glass, 0.05, 0.07, 0, false);
-    handle.rotation.z = -Math.PI / 2;
-    g.add(handle);
-  } else if (kind === 'highball') {
-    cyl(0.038, 0.17, M.glass, 0, 0.085, 0, 0.042);
-    cyl(0.033, 0.13, liquid('#eccb72', 0.82), 0, 0.068, 0, 0.037);
-    g.add(mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.008, 12), colorMat('#f4dd4a'), 0.012, 0.14, 0, false));
-  } else if (kind === 'wine') {
-    cyl(0.036, 0.006, M.glass, 0, 0.003);
-    cyl(0.006, 0.09, M.glass, 0, 0.05);
-    const bowl = mesh(new THREE.SphereGeometry(0.052, 14, 10, 0, Math.PI * 2, Math.PI * 0.28, Math.PI * 0.72), M.glass, 0, 0.145, 0, false);
-    bowl.scale.y = 1.25;
-    g.add(bowl);
-    g.add(mesh(new THREE.SphereGeometry(0.044, 14, 8, 0, Math.PI * 2, Math.PI * 0.55, Math.PI * 0.45), liquid('#8e1f3a'), 0, 0.142, 0, false));
-  } else if (kind === 'whisky') {
-    cyl(0.04, 0.08, M.glass, 0, 0.04, 0, 0.046);
-    cyl(0.036, 0.032, liquid('#b9661e', 0.92), 0, 0.02, 0, 0.039);
-    const ice = mesh(new THREE.BoxGeometry(0.032, 0.032, 0.032), liquid('#f4fbff', 0.7), 0.004, 0.045, 0, false);
-    ice.rotation.set(0.4, 0.6, 0.2);
-    g.add(ice);
-  } else {
-    cyl(0.036, 0.16, M.glass, 0, 0.08, 0, 0.042);
-    cyl(0.032, 0.12, liquid('#7fcbe6', 0.85), 0, 0.062, 0, 0.037);
-    const straw = cyl(0.005, 0.2, colorMat('#ef5d5d'), 0.012, 0.12);
-    straw.rotation.z = -0.22;
-  }
-  g.scale.setScalar(1.9); // 멀리서도 보이도록 살짝 과장
-  return g;
-}
 
 // ---------- 직원이 다니는 길 ----------
 const LANE_END_Z = GEO.tipZ - GEO.counterDepth - 0.45;
@@ -177,7 +30,7 @@ const laneOf = (x, z) => {
   for (let b = 1; b < BAR_COUNT; b++) if (Math.abs(x - barCenterX(b)) < Math.abs(x - barCenterX(best))) best = b;
   return best;
 };
-function routeTo(from, to) {
+function staffRoute(from, to) {
   const a = laneOf(from.x, from.z);
   const b = laneOf(to.x, to.z);
   const pts = [];
@@ -193,31 +46,40 @@ export class BarScene {
   constructor(container, labelLayer) {
     this.container = container;
     this.labelLayer = labelLayer;
-    this.avatars = new Map(); // userId -> avatar
+    this.avatars = new Map(); // userId -> 손님
+    this.ghosts = []; // 나가는 중인 손님
     this.seatUser = new Map(); // seatId -> userId
     this.orders = []; // 직원이 배달할 주문
+    this.calls = []; // 직원을 부른 손님 (userId)
+    this.onStaffArrived = null; // 내가 부른 직원이 자리에 도착했을 때
+    this.onSelfSeated = null; // 내 아바타가 실제로 자리에 앉았을 때
+    this.tweens = [];
     this.myId = null;
+    this.live = false; // 첫 상태를 받은 뒤부터는 변화가 걸어서 일어난다
     this.onPickUser = null;
     this.onPickSeat = null;
     this.moveMode = null;
+    this.panel = true; // 넓은 화면 왼쪽에 패널이 떠 있는지
+    this.fast = 1; // 건너뛰기 배속
     this.lastFrame = performance.now();
     this.time = 0;
+    this.quality = new URLSearchParams(location.search).has('px') ? 0 : 2; // 느린 기기에서는 자동으로 낮춘다 (2 → 0)
+    this.perf = { n: 0, sum: 0, hold: 4 };
 
     const renderer = (this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' }));
     this.lowPower = Math.min(window.innerWidth, window.innerHeight) < 600;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // 자동화 테스트용: ?px=0.4 처럼 주면 해상도를 고정하고 그림자를 끈다 (GPU 없는 환경에서 빨리 돌리려고)
+    const px = Number(new URLSearchParams(location.search).get('px'));
+    if (px > 0) renderer.setPixelRatio(px);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = !(px > 0);
     renderer.shadowMap.type = THREE.PCFShadowMap;
     container.appendChild(renderer.domElement);
 
     const scene = (this.scene = new THREE.Scene());
-    scene.background = new THREE.Color(BG);
-    scene.fog = new THREE.Fog(BG, 30, 80);
-    const camera = (this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 150));
-    camera.position.set(0, 14, 16);
-
+    const camera = (this.camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 950));
     const controls = (this.controls = new OrbitControls(camera, renderer.domElement));
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
@@ -228,320 +90,224 @@ export class BarScene {
     controls.maxPolarAngle = 1.32;
     controls.minAzimuthAngle = -1.15;
     controls.maxAzimuthAngle = 1.15;
-    controls.target.set(0, 0.9, -2.2);
-    controls.addEventListener('start', () => (this.goal = null));
+    controls.addEventListener('start', () => {
+      this.goal = null;
+      this.follow = false; // 손님이 직접 시점을 잡으면 따라가기를 멈춘다
+    });
 
-    this.#buildRoom();
-    this.#buildCounters();
-    this.#buildBackbar();
-    this.#buildSeats();
-    this.#buildLights();
+    this.city = buildCity(scene);
+    this.roof = buildRoof(scene, this.lowPower);
+    this.cab = buildElevator(scene);
+    this.#buildSun();
     this.staff = [this.#makeStaff(0), this.#makeStaff(1)];
 
+    this.look = V(0, 0, 0); // 연출 중 카메라가 보는 점
     this.view = 'overview';
     this.resize();
-    this.setView('overview', true);
+    this.enterStreet(true);
     new ResizeObserver(() => this.resize()).observe(container);
     this.#bindPicking();
     renderer.setAnimationLoop(() => this.#frame());
   }
 
-  // ===== 공간 =====
-  #buildRoom() {
-    const W = GEO.roomHalfWidth;
-    const depth = GEO.roomFrontZ - GEO.wallZ;
-    const floorTex = canvasTexture(512, 512, (c, w, h) => {
-      c.fillStyle = '#1d1c20';
-      c.fillRect(0, 0, w, h);
-      const rows = 8;
-      for (let r = 0; r < rows; r++) {
-        const off = (r % 2) * 90 + ((r * 53) % 70);
-        for (let x = -200; x < w; x += 190) {
-          const shade = 18 + ((r * 31 + x * 7) % 16);
-          c.fillStyle = `rgb(${shade + 24},${shade + 20},${shade + 22})`;
-          c.fillRect(x + off + 1, (r * h) / rows + 1, 188, h / rows - 2);
-        }
-      }
-      for (let i = 0; i < 1400; i++) {
-        c.fillStyle = `rgba(0,0,0,${Math.random() * 0.08})`;
-        c.fillRect(Math.random() * w, Math.random() * h, 30 + Math.random() * 60, 1);
-      }
-    });
-    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-    floorTex.repeat.set(7, 5);
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(W * 2, depth), std('#ffffff', { map: floorTex, roughness: 0.62 }));
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.set(0, 0, (GEO.roomFrontZ + GEO.wallZ) / 2);
-    floor.receiveShadow = true;
-    this.scene.add(floor);
-
-    const wallMat = std('#1b2030', { roughness: 0.95 });
-    const back = new THREE.Mesh(new THREE.PlaneGeometry(W * 2, 6.2), wallMat);
-    back.position.set(0, 3.1, GEO.wallZ);
-    this.scene.add(back);
-    for (const side of [-1, 1]) {
-      const wall = new THREE.Mesh(new THREE.PlaneGeometry(depth, 6.2), wallMat);
-      wall.position.set(side * W, 3.1, (GEO.roomFrontZ + GEO.wallZ) / 2);
-      wall.rotation.y = -side * (Math.PI / 2);
-      this.scene.add(wall);
-      // 허리 높이 나무 패널
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.1, depth), std('#2b1b14'));
-      panel.position.set(side * (W - 0.03), 0.55, (GEO.roomFrontZ + GEO.wallZ) / 2);
-      this.scene.add(panel);
-    }
-
-    // 직원 구역 바닥(가로 통로 + 튀어나온 바의 가운데 통로)을 어두운 매트로 구분
-    const matMat = std('#12141a', { roughness: 0.9 });
-    const addMat = (x0, x1, z0, z1) => {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), matMat);
-      m.rotation.x = -Math.PI / 2;
-      m.position.set((x0 + x1) / 2, 0.006, (z0 + z1) / 2);
-      m.receiveShadow = true;
-      this.scene.add(m);
-    };
-    addMat(-W, W, GEO.wallZ, GEO.frontZ);
-    for (let b = 0; b < BAR_COUNT; b++) {
-      const cx = barCenterX(b);
-      addMat(cx - GEO.laneWidth / 2, cx + GEO.laneWidth / 2, GEO.frontZ, GEO.tipZ - GEO.counterDepth);
-    }
-
-    // 구석 화분
-    for (const side of [-1, 1]) {
-      const pot = mesh(new THREE.CylinderGeometry(0.28, 0.2, 0.5, 14), std('#3a3f4b'), side * (W - 0.9), 0.25, 5.6);
-      const leafMat = std('#3f7a54', { roughness: 0.9, flatShading: true });
-      for (let i = 0; i < 5; i++) {
-        const leaf = mesh(new THREE.IcosahedronGeometry(0.3 + (i % 3) * 0.08, 0), leafMat, side * (W - 0.9) + Math.sin(i * 2.3) * 0.22, 0.75 + i * 0.2, 5.6 + Math.cos(i * 1.9) * 0.22);
-        this.scene.add(leaf);
-      }
-      this.scene.add(pot);
-    }
-  }
-
-  #buildCounters() {
-    const H = GEO.counterHeight;
-    const D = GEO.counterDepth;
-    const W = GEO.roomHalfWidth;
-    const bodyMat = std('#35211a', { roughness: 0.8 });
-    const topMat = std('#76584a', { roughness: 0.42 });
-    const glowMat = new THREE.MeshBasicMaterial({ color: '#ffb066', toneMapped: false });
-    const group = new THREE.Group();
-    const box = (x0, x1, z0, z1) => {
-      const w = x1 - x0;
-      const d = z1 - z0;
-      const body = mesh(new THREE.BoxGeometry(w, H, d), bodyMat, (x0 + x1) / 2, H / 2, (z0 + z1) / 2);
-      body.receiveShadow = true;
-      const top = mesh(new THREE.BoxGeometry(w, 0.07, d), topMat, (x0 + x1) / 2, H + 0.035, (z0 + z1) / 2);
-      top.receiveShadow = true;
-      group.add(body, top);
-    };
-    // 손님 쪽 면: 상판 아래 간접조명 + 황동 발걸이
-    const trim = (x0, z0, x1, z1) => {
-      const len = Math.hypot(x1 - x0, z1 - z0);
-      const alongX = Math.abs(x1 - x0) > Math.abs(z1 - z0);
-      const strip = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len : 0.02, 0.025, alongX ? 0.02 : len), glowMat);
-      strip.position.set((x0 + x1) / 2, H - 0.03, (z0 + z1) / 2);
-      const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, len, 8), M.brass);
-      rail.rotation.set(alongX ? 0 : Math.PI / 2, 0, alongX ? Math.PI / 2 : 0);
-      rail.position.set((x0 + x1) / 2, 0.24, (z0 + z1) / 2);
-      group.add(strip, rail);
-    };
-    const edges = [-W];
-    for (let b = 0; b < BAR_COUNT; b++) {
-      const cx = barCenterX(b);
-      const h = GEO.barWidth / 2;
-      box(cx - h, cx - h + D, GEO.frontZ, GEO.tipZ); // 왼쪽 팔
-      box(cx + h - D, cx + h, GEO.frontZ, GEO.tipZ); // 오른쪽 팔
-      box(cx - h + D, cx + h - D, GEO.tipZ - D, GEO.tipZ); // 끝
-      const o = 0.07;
-      trim(cx - h - o, GEO.frontZ + D, cx - h - o, GEO.tipZ + o);
-      trim(cx + h + o, GEO.frontZ + D, cx + h + o, GEO.tipZ + o);
-      trim(cx - h - o, GEO.tipZ + o, cx + h + o, GEO.tipZ + o);
-      edges.push(cx - h, cx + h);
-    }
-    edges.push(W);
-    // 바와 바를 잇는 연결 카운터 → 전체가 한 줄의 지그재그 카운터가 된다
-    for (let i = 0; i < edges.length; i += 2) {
-      box(edges[i], edges[i + 1], GEO.frontZ, GEO.frontZ + D);
-      trim(edges[i], GEO.frontZ + D + 0.07, edges[i + 1], GEO.frontZ + D + 0.07);
-    }
-    this.scene.add(group);
-  }
-
-  #buildBackbar() {
-    const z0 = GEO.wallZ;
-    const d = GEO.backbarDepth;
-    const half = GEO.roomHalfWidth - 0.6;
-    const wood = std('#2a1a13', { roughness: 0.7 });
-    const cab = mesh(new THREE.BoxGeometry(half * 2, 0.95, d), wood, 0, 0.475, z0 + d / 2);
-    cab.receiveShadow = true;
-    this.scene.add(cab, mesh(new THREE.BoxGeometry(half * 2, 0.05, d + 0.06), std('#6d4a30', { roughness: 0.4 }), 0, 0.975, z0 + d / 2));
-
-    // 은은하게 빛나는 뒷판
-    const glowTex = canvasTexture(512, 128, (c, w, h) => {
-      const g = c.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, '#2a1508');
-      g.addColorStop(0.55, '#b5632a');
-      g.addColorStop(1, '#3a1d0c');
-      c.fillStyle = g;
-      c.fillRect(0, 0, w, h);
-    });
-    const panel = new THREE.Mesh(new THREE.PlaneGeometry(half * 2, 2.0), new THREE.MeshBasicMaterial({ map: glowTex, toneMapped: false }));
-    panel.position.set(0, 2.0, z0 + 0.03);
-    this.scene.add(panel);
-
-    const shelfYs = [1.45, 2.0, 2.55];
-    const stripMat = new THREE.MeshBasicMaterial({ color: '#ffd9a3', toneMapped: false });
-    for (const y of shelfYs) {
-      this.scene.add(mesh(new THREE.BoxGeometry(half * 2, 0.04, 0.34), wood, 0, y, z0 + 0.19));
-      this.scene.add(mesh(new THREE.BoxGeometry(half * 2, 0.015, 0.02), stripMat, 0, y - 0.03, z0 + 0.34, false));
-    }
-    // 진열된 술병들
-    const profile = [[0, 0], [0.045, 0], [0.047, 0.17], [0.03, 0.22], [0.016, 0.25], [0.016, 0.31], [0, 0.31]].map(([x, y]) => new THREE.Vector2(x, y));
-    const per = Math.floor((half * 2 - 0.6) / 0.19);
-    const bottles = new THREE.InstancedMesh(
-      new THREE.LatheGeometry(profile, 10),
-      new THREE.MeshStandardMaterial({ roughness: 0.2, metalness: 0.1, emissive: '#ffffff', emissiveIntensity: 0.06 }),
-      per * shelfYs.length,
-    );
-    const palette = ['#3fae70', '#c98a2b', '#8e1f3a', '#e8e2d0', '#2d5c8a', '#b5521f', '#5f7a3a', '#d9b24a', '#40302a'];
-    const dummy = new THREE.Object3D();
-    const col = new THREE.Color();
-    let n = 0;
-    shelfYs.forEach((y, row) => {
-      for (let i = 0; i < per; i++) {
-        const k = hash(`${row}:${i}`);
-        const s = 0.8 + (k % 40) / 100;
-        dummy.position.set(-half + 0.4 + i * 0.19, y + 0.02, z0 + 0.16 + ((k >>> 4) % 10) / 100);
-        dummy.scale.set(s * 0.95, s, s * 0.95);
-        dummy.updateMatrix();
-        bottles.setMatrixAt(n, dummy.matrix);
-        bottles.setColorAt(n, col.set(palette[(k >>> 8) % palette.length]));
-        n++;
-      }
-    });
-    this.scene.add(bottles);
-
-    // 네온 간판
-    const makeSign = () =>
-      canvasTexture(1024, 384, (c, w, h) => {
-        c.clearRect(0, 0, w, h);
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        const neon = (text, font, y, color, blur) => {
-          c.font = font;
-          c.shadowColor = color;
-          for (const b of [blur, blur * 0.5, blur * 0.2]) {
-            c.shadowBlur = b;
-            c.fillStyle = color;
-            c.fillText(text, w / 2, y);
-          }
-          c.shadowBlur = 0;
-          c.fillStyle = '#fff6ef';
-          c.fillText(text, w / 2, y);
-        };
-        neon('온술바', '800 190px "Pretendard Variable", sans-serif', 150, '#ff7a59', 60);
-        neon('혼자여도 괜찮은 밤', '500 54px "Pretendard Variable", sans-serif', 310, '#7fd6ff', 30);
-      });
-    const signMat = new THREE.MeshBasicMaterial({ map: makeSign(), transparent: true, toneMapped: false, depthWrite: false });
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 2.4), signMat);
-    sign.position.set(0, 4.45, z0 + 0.06);
-    this.scene.add(sign);
-    this.signMat = signMat;
-    document.fonts?.load('800 190px "Pretendard Variable"', '온술바혼자여도괜찮은밤').then(() => {
-      signMat.map.dispose();
-      signMat.map = makeSign();
-    });
-  }
-
-  #buildSeats() {
-    this.seatMarkers = new Map();
-    this.hits = [];
-    const markerMat = new THREE.MeshBasicMaterial({ color: '#ffc46b', transparent: true, opacity: 0.9, toneMapped: false, side: THREE.DoubleSide, depthWrite: false });
-    for (const s of SEATS) {
-      const g = new THREE.Group();
-      g.position.set(s.x, 0, s.z);
-      const seat = mesh(G.stoolSeat, M.cushion[s.gender], 0, GEO.seatHeight - 0.04, 0);
-      const ring = mesh(G.stoolRing, M.brass, 0, 0.3, 0, false);
-      ring.rotation.x = Math.PI / 2;
-      g.add(seat, mesh(G.stoolPole, M.metal, 0, 0.35, 0), mesh(G.stoolBase, M.metal, 0, 0.015, 0), ring);
-      this.scene.add(g);
-
-      const marker = new THREE.Mesh(G.ring, markerMat.clone());
-      marker.rotation.x = -Math.PI / 2;
-      marker.position.set(s.x, 0.02, s.z);
-      marker.visible = false;
-      this.scene.add(marker);
-      this.seatMarkers.set(s.id, marker);
-
-      const hit = new THREE.Mesh(G.hit, new THREE.MeshBasicMaterial({ visible: false }));
-      hit.position.set(s.x, 0.475, s.z);
-      hit.scale.y = 0.5;
-      hit.userData.seatId = s.id;
-      this.scene.add(hit);
-      this.hits.push(hit);
-    }
-  }
-
-  #buildLights() {
-    this.scene.add(new THREE.HemisphereLight(0xa9b8ff, 0x2a1a10, 0.9));
+  #buildSun() {
+    // 황동·유리에 은은한 반사가 생기도록 주변 반사 환경을 깐다 (three.js 내장, 별도 파일 없음)
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.22;
+    pmrem.dispose();
+    this.scene.add(new THREE.HemisphereLight(0xa9b8ff, 0x2a1a10, 0.75));
     const key = new THREE.DirectionalLight(0xffe6cf, 1.5);
     key.position.set(-5, 13, 9);
     key.target.position.set(0, 0, -2.5);
     key.castShadow = true;
     const size = this.lowPower ? 1024 : 2048;
     key.shadow.mapSize.set(size, size);
-    Object.assign(key.shadow.camera, { left: -13, right: 13, top: 9, bottom: -9, near: 1, far: 40 });
+    Object.assign(key.shadow.camera, { left: -13, right: 23, top: 11, bottom: -10, near: 1, far: 44 });
     key.shadow.bias = -0.0006;
     key.shadow.normalBias = 0.03;
     this.scene.add(key, key.target);
+  }
 
-    const glowTex = canvasTexture(128, 128, (c, w, h) => {
-      const g = c.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
-      g.addColorStop(0, 'rgba(255,214,160,1)');
-      g.addColorStop(0.25, 'rgba(255,170,90,0.5)');
-      g.addColorStop(1, 'rgba(255,150,60,0)');
-      c.fillStyle = g;
-      c.fillRect(0, 0, w, h);
+  // ===== 장면 전환 =====
+  /** 지금 무대에 필요한 것만 켠다 (조명 수를 줄여 휴대폰에서도 가볍게) */
+  #setStage(stage) {
+    this.stage = stage;
+    const street = stage === 'street';
+    this.city.street.group.visible = street;
+    for (const l of this.city.street.lights) l.visible = street;
+    this.roof.group.visible = !street;
+    for (const l of this.roof.lights) l.visible = !street;
+    this.cab.group.visible = !street;
+    this.cab.light.visible = !street;
+    this.labelLayer.style.display = stage === 'roof' ? '' : 'none';
+    this.perf = { n: 0, sum: 0, hold: 3 }; // 장면이 바뀐 직후의 끊김은 성능 측정에서 뺀다
+  }
+
+  /** 프레임이 계속 느리면 해상도를 낮추고, 그래도 느리면 그림자를 끈다 */
+  #adaptQuality(elapsed) {
+    const p = this.perf;
+    if (document.hidden || this.quality === 0) return;
+    if (p.hold > 0) {
+      p.hold -= elapsed;
+      return;
+    }
+    p.n++;
+    p.sum += elapsed;
+    if (p.n < 45) return;
+    const avg = p.sum / p.n;
+    this.perf = { n: 0, sum: 0, hold: 2 };
+    if (avg < 0.045) return; // 22fps 이상이면 그대로
+    this.quality--;
+    const dpr = window.devicePixelRatio || 1;
+    this.renderer.setPixelRatio(this.quality === 1 ? Math.min(dpr, 1.25) : 1);
+    if (this.quality === 0) {
+      this.renderer.shadowMap.enabled = false;
+      this.scene.traverse((o) => {
+        if (o.material) o.material.needsUpdate = true;
+      });
+    }
+    this.resize(true);
+  }
+
+  #scripted(on) {
+    this.script = on;
+    this.controls.enabled = !on;
+    if (on) this.goal = null;
+  }
+
+  #pose(p, attach = null) {
+    this.attach = attach;
+    this.camPos = p.pos.clone();
+    this.look.copy(p.look);
+    this.camFov = p.fov;
+    this.shot = null;
+  }
+
+  /** 카메라를 지금 자리에서 to 까지 부드럽게 옮긴다 */
+  #shotTo(to, dur) {
+    return new Promise((done) => {
+      this.shot = { from: { pos: this.camPos.clone(), look: this.look.clone(), fov: this.camFov }, to, t: 0, dur, done };
     });
-    const glowMat = new THREE.SpriteMaterial({ map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
-    const shadeMat = std('#16171c', { roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide });
-    const bulbMat = new THREE.MeshBasicMaterial({ color: '#ffe0b0', toneMapped: false });
-    for (let b = 0; b < BAR_COUNT; b++) {
-      const cx = barCenterX(b);
-      const light = new THREE.PointLight(0xffb873, 17, 12, 1.8);
-      light.position.set(cx, 3.7, -2.1);
-      this.scene.add(light);
-      for (const z of [-3.5, -1.3]) {
-        const cord = mesh(new THREE.CylinderGeometry(0.008, 0.008, 3.1, 4), M.metal, cx, 4.6, z, false);
-        const shade = mesh(new THREE.ConeGeometry(0.3, 0.26, 20, 1, true), shadeMat, cx, 3.02, z, false);
-        const bulb = mesh(new THREE.SphereGeometry(0.075, 12, 10), bulbMat, cx, 2.93, z, false);
-        const glow = new THREE.Sprite(glowMat);
-        glow.scale.setScalar(1.5);
-        glow.position.set(cx, 2.9, z);
-        this.scene.add(cord, shade, bulb, glow);
-      }
+  }
+
+  #tween(dur, fn = () => {}) {
+    return new Promise((done) => this.tweens.push({ t: 0, dur, fn, done }));
+  }
+
+  /** 1층 골목 (입장 전). intro 면 빌딩 꼭대기를 올려다보다가 문으로 내려온다 */
+  enterStreet(intro = true) {
+    this.#setStage('street');
+    this.#scripted(true);
+    this.fast = 1;
+    const s = this.city.street;
+    s.hinge.rotation.y = 0;
+    s.inside.visible = false;
+    s.slotMat.color.set('#1b1611');
+    this.#pose(intro ? SHOT.streetUp : SHOT.street);
+    const token = (this.streetIntro = {});
+    if (intro) {
+      this.#tween(0.9).then(() => {
+        if (this.streetIntro === token) this.#shotTo(SHOT.street, 3.4);
+      });
     }
-    // 백바 조명
-    for (const x of [-6.5, 0, 6.5]) {
-      const l = new THREE.PointLight(0xff9c5a, 9, 8, 1.8);
-      l.position.set(x, 2.2, GEO.wallZ + 1.1);
-      this.scene.add(l);
-    }
+  }
+
+  /** 문틈으로 눈이 한번 살피고, 문이 열린다 */
+  async openStreetDoor() {
+    this.streetIntro = null;
+    const s = this.city.street;
+    s.slotMat.color.set('#ffc37a');
+    await this.#tween(0.55);
+    s.inside.visible = true;
+    this.#shotTo(SHOT.doorway, 1.9);
+    await this.#tween(1.1, (k) => (s.hinge.rotation.y = ease(k) * 1.45));
+  }
+
+  /** 엘리베이터를 타고 루프탑까지. onFloor(층) 으로 층수를 알려 준다 */
+  async rideElevator(onFloor) {
+    this.#setStage('elevator');
+    this.#scripted(true);
+    this.cab.group.position.y = GROUND_Y;
+    this.cab.setOpen(0);
+    this.cabHold = true;
+    this.#pose(SHOT.cabView, this.cab.group);
+    this.riding = true;
+    onFloor(1);
+    await this.#tween(0.8);
+    const rise = this.#tween(6, (k) => {
+      const e = ease(k);
+      this.cab.group.position.y = GROUND_Y * (1 - e);
+      onFloor(1 + Math.round(e * 16));
+    });
+    await this.#tween(4.4);
+    this.#shotTo(SHOT.cabDoor, 1.7);
+    await rise;
+    this.riding = false;
+    await this.#tween(0.4);
+    this.fast = 1;
+    this.#setStage('roof');
+    await this.#tween(0.9, (k) => this.cab.setOpen(ease(k)));
+  }
+
+  skipRide() {
+    if (this.riding) this.fast = 14;
+  }
+
+  /** 엘리베이터에서 걸어 나와 로비를 내려다보는 시점으로 */
+  async stepOut() {
+    const base = this.cab.group.position;
+    this.camPos.add(base);
+    this.look.add(base);
+    this.attach = null;
+    await this.#shotTo(SHOT.stepOut, 1.5);
+    const v = this.#viewPose(this.view);
+    await this.#shotTo({ pos: v.pos, look: v.target, fov: FOV }, 1.7);
+    this.#handOver();
+    this.#tween(1.2).then(() => (this.cabHold = false));
+  }
+
+  /** 연출 없이 바로 루프탑으로 (새로고침으로 자리에 돌아온 경우 등) */
+  showRoof(view) {
+    this.#setStage('roof');
+    this.fast = 1;
+    this.riding = false;
+    this.cabHold = false;
+    this.cab.group.position.y = 0;
+    this.cab.setOpen(0);
+    this.attach = null;
+    this.shot = null;
+    this.camFov = FOV;
+    this.view = view;
+    this.#handOver(true);
+  }
+
+  #handOver(instant = false) {
+    this.#scripted(false);
+    this.camera.fov = FOV;
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(this.look);
+    this.setView(this.view, instant);
   }
 
   // ===== 직원 =====
   #makeStaff(index) {
-    const person = buildPerson({ seed: hash(`staff${index}`), standing: true, staff: true });
+    const person = buildPerson({ seed: hash(`staff${index}`), staff: true });
     person.group.scale.setScalar(1.06);
     const homeBar = index === 0 ? 0 : BAR_COUNT - 1;
     person.group.position.set(barCenterX(homeBar), 0, GEO.corridorZ);
-    this.scene.add(person.group);
+    this.roof.group.add(person.group);
     const tray = new THREE.Group();
     tray.add(mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.012, 16), M.metal, 0, 0, 0, false));
     tray.position.set(0.3, 1.18, 0.22);
     tray.visible = false;
     person.body.add(tray);
-    return { ...person, tray, index, path: [], wait: 1 + index * 2, job: null, phase: 'idle', heading: 0, step: 0 };
+    // 직원 머리 위 말풍선 ("주문하시겠어요?")
+    const tag = document.createElement('div');
+    tag.className = 'tag staff';
+    tag.innerHTML = '<div class="bubble" hidden></div>';
+    this.labelLayer.appendChild(tag);
+    return { ...person, tray, tag, bubbleEl: tag.firstChild, index, path: [], wait: 1 + index * 2, job: null, attend: null, phase: 'idle', heading: 0, step: 0 };
   }
 
   #staffIdleTarget(st) {
@@ -552,34 +318,41 @@ export class BarScene {
     return { x: barCenterX(b) + (Math.random() - 0.5) * 0.5, z: GEO.frontZ + 0.6 + Math.random() * (LANE_END_Z - GEO.frontZ - 0.6) };
   }
 
-  #updateStaff(st, dt) {
-    const pos = st.group.position;
-    if (st.path.length) {
-      const tgt = st.path[0];
+  /** 경로를 따라 한 걸음. 도착해서 더 갈 곳이 없으면 false */
+  #stepAlong(p, dt, speed) {
+    const pos = p.group.position;
+    if (p.path.length === 0) {
+      walkCycle(p, 0, 0);
+    } else {
+      const tgt = p.path[0];
       const dx = tgt.x - pos.x;
       const dz = tgt.z - pos.z;
       const dist = Math.hypot(dx, dz);
-      const stepLen = 3.0 * dt;
+      const stepLen = speed * dt;
       if (dist <= stepLen) {
         pos.x = tgt.x;
         pos.z = tgt.z;
-        st.path.shift();
+        p.path.shift();
       } else {
         pos.x += (dx / dist) * stepLen;
         pos.z += (dz / dist) * stepLen;
-        st.heading = Math.atan2(dx, dz);
+        p.heading = Math.atan2(dx, dz);
       }
-      st.step += dt * 9;
-      st.body.position.y = Math.abs(Math.sin(st.step)) * 0.035;
-    } else {
-      st.body.position.y *= 0.8;
+      p.step += dt * speed * 3.6;
+      walkCycle(p, p.step, 1);
+    }
+    // 부드럽게 방향 전환
+    let d = p.heading - p.group.rotation.y;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    p.group.rotation.y += d * Math.min(1, dt * 10);
+    return p.path.length > 0;
+  }
+
+  #updateStaff(st, dt) {
+    if (!this.#stepAlong(st, dt, 3.0)) {
       st.wait -= dt;
       if (st.wait <= 0) this.#staffNext(st);
     }
-    // 부드럽게 방향 전환
-    let d = st.heading - st.group.rotation.y;
-    d = Math.atan2(Math.sin(d), Math.cos(d));
-    st.group.rotation.y += d * Math.min(1, dt * 10);
   }
 
   #staffNext(st) {
@@ -590,7 +363,7 @@ export class BarScene {
       st.tray.add((st.cargo = buildDrink(st.job.drink)));
       st.cargo.scale.setScalar(1.2);
       const seat = SEAT_BY_ID.get(st.job.seatId);
-      st.path = routeTo(pos, { x: seat.laneX, z: seat.laneZ });
+      st.path = staffRoute(pos, { x: seat.laneX, z: seat.laneZ });
       st.phase = 'toSeat';
       st.wait = 0.01;
     } else if (st.phase === 'toSeat') {
@@ -606,85 +379,232 @@ export class BarScene {
       st.job = null;
       st.phase = 'idle';
       st.wait = 0.5;
+    } else if (st.phase === 'attendGo') {
+      // 부른 손님 앞에 도착: 주문을 기다린다
+      const seat = SEAT_BY_ID.get(st.attend.seatId);
+      st.heading = Math.atan2(seat.x - pos.x, seat.z - pos.z);
+      st.phase = 'attending';
+      st.wait = 25;
+      st.bubbleEl.textContent = '주문하시겠어요?';
+      st.bubbleEl.hidden = false;
+      if (st.attend.userId === this.myId) this.onStaffArrived?.();
+    } else if (st.phase === 'attending') {
+      this.#endAttend(st);
     } else {
-      const job = this.orders.shift();
-      if (job) {
-        st.job = job;
-        const x = THREE.MathUtils.clamp(barCenterX(SEAT_BY_ID.get(job.seatId).bar) + (st.index ? 0.5 : -0.5), -9, 9);
-        st.path = routeTo(pos, { x, z: GEO.corridorZ - 0.25 });
-        st.heading = Math.PI; // 백바를 바라봄
-        st.phase = 'toBackbar';
-        st.wait = 0.45;
+      const caller = this.calls.shift();
+      const job = caller ? null : this.orders.shift();
+      if (caller) {
+        this.#attend(st, caller);
+      } else if (job) {
+        this.#takeJob(st, job);
       } else {
-        st.path = routeTo(pos, this.#staffIdleTarget(st));
+        st.path = staffRoute(pos, this.#staffIdleTarget(st));
         st.wait = 1.5 + Math.random() * 4;
       }
     }
   }
 
+  #takeJob(st, job) {
+    st.job = job;
+    const x = THREE.MathUtils.clamp(barCenterX(SEAT_BY_ID.get(job.seatId).bar) + (st.index ? 0.5 : -0.5), -9, 9);
+    st.path = staffRoute(st.group.position, { x, z: GEO.corridorZ - 0.25 });
+    st.phase = 'toBackbar';
+    st.wait = 0.45;
+  }
+
+  #attend(st, userId) {
+    const av = this.avatars.get(userId);
+    if (!av?.seatId) return;
+    const seat = SEAT_BY_ID.get(av.seatId);
+    st.attend = { userId, seatId: av.seatId };
+    st.path = staffRoute(st.group.position, { x: seat.laneX, z: seat.laneZ });
+    st.phase = 'attendGo';
+    st.wait = 0.01;
+  }
+
+  #endAttend(st) {
+    st.attend = null;
+    st.bubbleEl.hidden = true;
+    st.phase = 'idle';
+    st.wait = 0.4;
+  }
+
+  /** 손님이 직원을 불렀다: 한가한 직원이 그 자리로 걸어간다 */
+  summonStaff(userId) {
+    const av = this.avatars.get(userId);
+    if (!av?.seatId || this.calls.includes(userId) || this.staff.some((st) => st.attend?.userId === userId)) return;
+    const seat = SEAT_BY_ID.get(av.seatId);
+    const free = this.staff
+      .filter((st) => !st.job && !st.attend)
+      .sort((a, b) => Math.abs(a.group.position.x - seat.laneX) - Math.abs(b.group.position.x - seat.laneX));
+    if (free.length) this.#attend(free[0], userId);
+    else this.calls.push(userId); // 모두 바쁘면 일이 끝나는 대로
+  }
+
+  /** 주문 없이 메뉴판을 덮었을 때: 직원이 물러난다 */
+  dismissStaff(userId) {
+    this.calls = this.calls.filter((id) => id !== userId);
+    for (const st of this.staff) {
+      if (st.attend?.userId !== userId) continue;
+      if (st.phase === 'attending') st.wait = 0.3;
+      else {
+        st.path = [];
+        this.#endAttend(st);
+      }
+    }
+  }
+
   // ===== 손님 =====
-  /** 서버 상태에 맞춰 아바타를 추가/이동/삭제한다 */
-  setUsers(users, myId, now) {
+  /**
+   * 서버 상태에 맞춘다. 처음 받은 상태는 그대로 배치하고,
+   * 그 뒤의 변화(입장·대기 줄·자리 옮기기·퇴장)는 전부 걸어서 일어난다.
+   */
+  setUsers(users, queue, myId, now) {
     this.myId = myId;
-    const seen = new Set();
+    const want = new Map();
     this.seatUser.clear();
     for (const u of users) {
-      seen.add(u.id);
+      want.set(u.id, { u, seatId: u.seatId, slot: null });
       this.seatUser.set(u.seatId, u.id);
-      let av = this.avatars.get(u.id);
+    }
+    queue.forEach((q, i) => want.set(q.id, { u: q, seatId: null, slot: Math.min(i, QUEUE_VISIBLE - 1) }));
+
+    for (const [id, w] of want) {
+      const u = w.u;
+      let av = this.avatars.get(id);
       const isNew = !av;
       if (!av) av = this.#makeAvatar(u);
-      if (av.seatId !== u.seatId) {
-        const s = SEAT_BY_ID.get(u.seatId);
-        av.seatId = u.seatId;
-        av.group.position.set(s.x, 0, s.z);
-        av.group.rotation.y = Math.atan2(s.face[0], s.face[1]);
-        av.drinkGroup.position.set(s.drinkX, TOP_Y, s.drinkZ);
-        av.drinkGroup.rotation.y = av.group.rotation.y;
-        av.pop = 0; // 앉는 애니메이션
-        for (const o of this.orders) if (o.userId === u.id) o.seatId = u.seatId;
-      }
       av.user = u;
       av.nameEl.textContent = u.name;
-      av.tag.classList.toggle('me', u.id === myId);
+      av.tag.classList.toggle('me', id === myId);
       av.tag.classList.toggle('busy', !!u.busy);
       av.tag.classList.toggle('away', !!u.away);
       av.tag.dataset.gender = u.gender;
-      av.selfRing.visible = u.id === myId;
-      if (av.orderedAt !== u.orderedAt) {
+      av.selfRing.visible = id === myId;
+
+      const goal = w.seatId ? `seat:${w.seatId}` : `slot:${w.slot}`;
+      if (av.goal !== goal) {
+        av.goal = goal;
+        av.seatId = w.seatId;
+        av.slot = w.slot;
+        if (w.seatId) {
+          const s = SEAT_BY_ID.get(w.seatId);
+          av.drinkGroup.position.set(s.drinkX, TOP_Y, s.drinkZ);
+          av.drinkGroup.rotation.y = Math.atan2(s.face[0], s.face[1]);
+          for (const o of this.orders) if (o.userId === id) o.seatId = w.seatId;
+        }
+        if (this.live) this.#walk(av);
+        else this.#place(av);
+      }
+      if (w.seatId && u.drink && u.orderedAt && av.orderedAt !== u.orderedAt) {
         av.orderedAt = u.orderedAt;
-        this.orders = this.orders.filter((o) => o.userId !== u.id);
-        if (isNew && now - u.orderedAt > 9000) this.#placeDrink(u.id, u.drink, u.orderedAt);
-        else this.orders.push({ userId: u.id, seatId: u.seatId, drink: u.drink, orderedAt: u.orderedAt });
+        this.orders = this.orders.filter((o) => o.userId !== id);
+        const job = { userId: id, seatId: w.seatId, drink: u.drink, orderedAt: u.orderedAt };
+        const waiter = this.staff.find((st) => st.attend?.userId === id); // 주문을 받고 있던 직원이 바로 만들러 간다
+        if (isNew && now - u.orderedAt > 9000) this.#placeDrink(id, u.drink, u.orderedAt);
+        else if (waiter) {
+          waiter.path = [];
+          this.#endAttend(waiter);
+          this.#takeJob(waiter, job);
+        } else this.orders.push(job);
       }
     }
+
     for (const [id, av] of this.avatars) {
-      if (seen.has(id)) continue;
-      this.scene.remove(av.group, av.drinkGroup);
-      av.tag.remove();
+      if (want.has(id)) continue;
       this.avatars.delete(id);
       this.orders = this.orders.filter((o) => o.userId !== id);
+      this.dismissStaff(id);
+      av.tag.remove();
+      this.roof.group.remove(av.drinkGroup);
+      av.selfRing.visible = false;
+      // 인사하고 엘리베이터로 걸어 나간다
+      setPose(av, 'stand');
+      av.path = walkRoute({ x: av.group.position.x, z: av.group.position.z }, av.atSeat, { point: NAV.elevator });
+      av.atSeat = null;
+      av.group.position.y = 0;
+      this.ghosts.push(av);
     }
+    this.live = true;
     this.#refreshMarkers();
   }
 
   #makeAvatar(u) {
     const person = buildPerson({ color: AVATAR_COLORS[u.color] || AVATAR_COLORS[0], seed: hash(u.id) });
     const drinkGroup = new THREE.Group();
+    drinkGroup.visible = false;
     const selfRing = new THREE.Mesh(G.ring, new THREE.MeshBasicMaterial({ color: '#ffb35c', transparent: true, opacity: 0.95, toneMapped: false, side: THREE.DoubleSide, depthWrite: false }));
     selfRing.rotation.x = -Math.PI / 2;
     selfRing.position.y = 0.025;
     selfRing.scale.setScalar(1.25);
     person.group.add(selfRing);
-    this.scene.add(person.group, drinkGroup);
+    // 새로 온 손님은 엘리베이터에서 내린다
+    person.group.position.set(NAV.elevator.x, 0, NAV.elevator.z);
+    person.group.rotation.y = FACE_DOOR;
+    this.roof.group.add(person.group, drinkGroup);
 
     const tag = document.createElement('div');
     tag.className = 'tag';
     tag.innerHTML = '<div class="bubble" hidden></div><div class="plate"><i class="dot"></i><span class="name"></span><span class="badge">통화 중</span></div>';
     this.labelLayer.appendChild(tag);
-    const av = { ...person, drinkGroup, selfRing, tag, nameEl: tag.querySelector('.name'), bubbleEl: tag.querySelector('.bubble'), seatId: null, pop: 0, talk: 0, cheers: 0, speaking: false, seed: hash(u.id) % 100, orderedAt: null };
+    const av = {
+      ...person,
+      id: u.id,
+      drinkGroup,
+      selfRing,
+      tag,
+      nameEl: tag.querySelector('.name'),
+      bubbleEl: tag.querySelector('.bubble'),
+      goal: null,
+      seatId: null, // 서버가 정해 준 자리
+      atSeat: null, // 지금 실제로 앉아 있는 자리
+      slot: null,
+      path: [],
+      heading: FACE_DOOR,
+      step: 0,
+      settle: 1,
+      talk: 0,
+      cheers: 0,
+      speaking: false,
+      seed: hash(u.id) % 100,
+      orderedAt: null,
+    };
     this.avatars.set(u.id, av);
     return av;
+  }
+
+  /** 걷지 않고 바로 제자리에 */
+  #place(av) {
+    av.path = [];
+    if (av.seatId) {
+      this.#sit(av);
+    } else {
+      const p = queueSlot(av.slot);
+      setPose(av, 'stand');
+      av.atSeat = null;
+      av.group.position.set(p.x, 0, p.z);
+      av.heading = av.group.rotation.y = FACE_DOOR;
+    }
+  }
+
+  #walk(av) {
+    const target = av.seatId ? { seatId: av.seatId } : { point: queueSlot(av.slot) };
+    av.path = walkRoute({ x: av.group.position.x, z: av.group.position.z }, av.atSeat, target);
+    av.atSeat = null;
+    av.group.position.y = 0;
+    av.drinkGroup.visible = false; // 잔은 자리에 앉으면 다시 보인다
+    setPose(av, 'stand');
+  }
+
+  #sit(av) {
+    const s = SEAT_BY_ID.get(av.seatId);
+    setPose(av, 'sit');
+    av.atSeat = av.seatId;
+    av.group.position.set(s.x, 0, s.z);
+    av.heading = av.group.rotation.y = Math.atan2(s.face[0], s.face[1]);
+    av.drinkGroup.visible = true;
+    av.settle = 0;
+    if (av.id === this.myId) this.onSelfSeated?.();
   }
 
   #placeDrink(userId, kind, orderedAt) {
@@ -709,7 +629,7 @@ export class BarScene {
 
   cheers(userId) {
     const av = this.avatars.get(userId);
-    if (av) av.cheers = 1.3;
+    if (av?.atSeat) av.cheers = 1.3;
   }
 
   setSpeaking(userId, on) {
@@ -727,10 +647,10 @@ export class BarScene {
 
   #refreshMarkers() {
     for (const s of SEATS) {
-      this.seatMarkers.get(s.id).visible = !!this.moveMode && s.gender === this.moveMode && !this.seatUser.has(s.id);
+      this.roof.seatMarkers.get(s.id).visible = !!this.moveMode && s.gender === this.moveMode && !this.seatUser.has(s.id);
     }
     // 누르는 영역을 보이는 모습에 맞춘다: 빈자리는 스툴 높이, 손님이 있으면 사람 키
-    for (const hit of this.hits) {
+    for (const hit of this.roof.hits) {
       const taken = this.seatUser.has(hit.userData.seatId);
       hit.scale.y = taken ? 1 : 0.5;
       hit.position.y = taken ? 0.95 : 0.475;
@@ -738,46 +658,88 @@ export class BarScene {
   }
 
   // ===== 카메라 =====
-  setView(view, instant = false) {
-    this.view = view;
-    // 넓은 화면에서는 왼쪽 패널(입장 카드/대화창)을 뺀 영역에 맞춘다
+  #viewPose(view) {
+    // 넓은 화면에서는 왼쪽 패널을 뺀 영역에 맞춘다
     const aspect = (this.size.w - this.inset) / this.size.h;
-    const t = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    const t = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
     let target;
     let dir;
     let dist;
     if (view === 'overview') {
-      target = new THREE.Vector3(0, 0.9, -1.9);
-      dir = new THREE.Vector3(0, 0.68, 0.74);
-      dist = THREE.MathUtils.clamp(Math.max(11.1 / (t * aspect), 5.4 / t), 13, 38);
+      target = V(0, 0.9, -1.2);
+      dir = V(0, 0.68, 0.74);
+      dist = THREE.MathUtils.clamp(Math.max(11.1 / (t * aspect), 6.2 / t), 13, 40);
+    } else if (view === 'foyer') {
+      target = V(15.2, 1.0, 5.4);
+      dir = V(-0.1, 0.6, 0.8);
+      dist = THREE.MathUtils.clamp(Math.max(4.9 / (t * aspect), 3.3 / t), 9, 26);
     } else {
       const cx = barCenterX(view.bar);
-      target = new THREE.Vector3(cx, 1.0, -2.0);
-      dir = new THREE.Vector3((1 - view.bar) * 0.1, 0.66, 0.75);
+      target = V(cx, 1.0, -2.0);
+      dir = V((1 - view.bar) * 0.1, 0.66, 0.75);
       dist = THREE.MathUtils.clamp(Math.max(2.9 / (t * aspect), 3.4 / t), 8, 22);
     }
-    const pos = target.clone().addScaledVector(dir.normalize(), dist);
+    return { pos: target.clone().addScaledVector(dir.normalize(), dist), target };
+  }
+
+  /** 'overview' | 'foyer' | { bar } */
+  setView(view, instant = false) {
+    this.view = view;
+    if (this.script) return; // 연출이 끝나면 이 시점으로 넘어간다
+    const v = this.#viewPose(view);
     if (instant) {
-      this.camera.position.copy(pos);
-      this.controls.target.copy(target);
+      this.camera.position.copy(v.pos);
+      this.controls.target.copy(v.target);
       this.goal = null;
     } else {
-      this.goal = { pos, target };
+      this.goal = v;
     }
   }
 
-  resize() {
+  /** 내 자리로. 걸어가는 동안은 카메라가 나를 따라가고, 앉으면 그 바를 비춘다 */
+  focusSeat(seatId, instant = false) {
+    this.follow = !instant;
+    if (instant) this.setView({ bar: SEAT_BY_ID.get(seatId).bar }, true);
+  }
+
+  #followMe() {
+    const me = this.avatars.get(this.myId);
+    if (!me || !me.seatId) return;
+    if (me.atSeat) {
+      this.follow = false;
+      this.setView({ bar: SEAT_BY_ID.get(me.atSeat).bar });
+    } else if (me.group.position.x > NAV.wallX + 0.2) {
+      if (this.view !== 'foyer') this.setView('foyer'); // 아직 로비: 문을 지날 때까지 로비를 비춘다
+    } else {
+      this.view = { bar: SEAT_BY_ID.get(me.seatId).bar };
+      if (this.script) return;
+      const t = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+      const aspect = (this.size.w - this.inset) / this.size.h;
+      const target = V(me.group.position.x, 1.0, me.group.position.z - 1.2);
+      const dist = THREE.MathUtils.clamp(Math.max(3.4 / (t * aspect), 3.9 / t), 9, 22);
+      this.goal = { pos: target.clone().addScaledVector(V(0.04, 0.66, 0.75).normalize(), dist), target };
+    }
+  }
+
+  /** 넓은 화면에서 왼쪽 패널이 있는 동안에는 장면을 오른쪽으로 민다 */
+  setPanel(on) {
+    if (this.panel === on) return;
+    this.panel = on;
+    this.resize(true);
+  }
+
+  resize(force = false) {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h);
-    const changed = Math.abs(this.camera.aspect - w / h) > 0.01;
+    const changed = force || Math.abs(this.camera.aspect - w / h) > 0.01;
     this.camera.aspect = w / h;
-    this.inset = w >= 860 ? 430 : 0;
+    this.inset = w >= 860 && this.panel ? 430 : 0;
     if (this.inset) this.camera.setViewOffset(w, h, -this.inset / 2, 0, w, h);
     else this.camera.clearViewOffset();
     this.camera.updateProjectionMatrix();
     this.size = { w, h };
-    if (changed && this.view) this.setView(this.view, !this.goal && this.time < 0.5);
+    if (changed && !this.script && this.view) this.setView(this.view, this.time < 0.5);
   }
 
   #bindPicking() {
@@ -787,13 +749,14 @@ export class BarScene {
     el.addEventListener('pointerdown', (e) => (down = { x: e.clientX, y: e.clientY, t: e.timeStamp }));
     el.addEventListener('pointerup', (e) => {
       if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8 || e.timeStamp - down.t > 600) return;
+      if (this.script || this.stage !== 'roof') return;
       const r = el.getBoundingClientRect();
       if (this.moveMode) {
         // 자리 옮기기 중에는 누른 곳에서 가장 가까운 빛나는 빈자리를 고른다 (작은 화면에서도 누르기 쉽게)
         const v = new THREE.Vector3();
         let best = null;
         let bestD = 44;
-        for (const [seatId, marker] of this.seatMarkers) {
+        for (const [seatId, marker] of this.roof.seatMarkers) {
           if (!marker.visible) continue;
           v.set(marker.position.x, 0.5, marker.position.z).project(this.camera);
           const d = Math.hypot(r.left + (v.x * 0.5 + 0.5) * r.width - e.clientX, r.top + (-v.y * 0.5 + 0.5) * r.height - e.clientY);
@@ -805,7 +768,7 @@ export class BarScene {
         if (best) return this.onPickSeat?.(best);
       }
       ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.camera);
-      const hit = ray.intersectObjects(this.hits, false)[0];
+      const hit = ray.intersectObjects(this.roof.hits, false)[0];
       if (!hit) return this.onPickUser?.(null);
       const seatId = hit.object.userData.seatId;
       const userId = this.seatUser.get(seatId);
@@ -815,29 +778,67 @@ export class BarScene {
   }
 
   // ===== 매 프레임 =====
-  #frame() {
-    const nowMs = performance.now();
-    const elapsed = (nowMs - this.lastFrame) / 1000;
-    this.lastFrame = nowMs;
-    const dt = Math.min(elapsed, 0.1);
-    const t = (this.time += dt);
-
-    if (this.goal) {
-      const k = 1 - Math.exp(-Math.min(elapsed, 0.5) * 3.2);
-      this.camera.position.lerp(this.goal.pos, k);
-      this.controls.target.lerp(this.goal.target, k);
-      if (this.camera.position.distanceTo(this.goal.pos) < 0.02) this.goal = null;
-    }
-    this.controls.update();
-
-    for (const st of this.staff) this.#updateStaff(st, dt);
-
-    const pulse = 0.55 + Math.sin(t * 4) * 0.35;
-    for (const m of this.seatMarkers.values()) {
-      if (m.visible) {
-        m.material.opacity = pulse;
-        m.scale.setScalar(1.15 + Math.sin(t * 4) * 0.1);
+  #updateCamera(dt, elapsed, t) {
+    if (!this.script) {
+      if (this.goal) {
+        const k = 1 - Math.exp(-Math.min(elapsed, 0.5) * 3.2);
+        this.camera.position.lerp(this.goal.pos, k);
+        this.controls.target.lerp(this.goal.target, k);
+        if (this.camera.position.distanceTo(this.goal.pos) < 0.02) this.goal = null;
       }
+      this.controls.update();
+      return;
+    }
+    const s = this.shot;
+    if (s) {
+      s.t += dt;
+      const k = ease(clamp01(s.t / s.dur));
+      this.camPos.lerpVectors(s.from.pos, s.to.pos, k);
+      this.look.lerpVectors(s.from.look, s.to.look, k);
+      this.camFov = s.from.fov + (s.to.fov - s.from.fov) * k;
+      if (s.t >= s.dur) {
+        this.shot = null;
+        s.done();
+      }
+    }
+    const base = this.attach ? this.attach.position : null;
+    const cam = this.camera;
+    cam.position.copy(this.camPos);
+    if (base) cam.position.add(base);
+    // 손에 든 카메라처럼 아주 살짝 흔들림 (엘리베이터가 움직일 때는 조금 더)
+    const shake = this.riding ? 0.006 : 0.012;
+    cam.position.x += Math.sin(t * (this.riding ? 23 : 0.6)) * shake;
+    cam.position.y += Math.sin(t * (this.riding ? 31 : 0.45) + 1) * shake * 0.6;
+    const lookAt = base ? this.look.clone().add(base) : this.look;
+    cam.lookAt(lookAt);
+    if (Math.abs(cam.fov - this.camFov) > 0.01) {
+      cam.fov = this.camFov;
+      cam.updateProjectionMatrix();
+    }
+  }
+
+  #updateDoors(dt) {
+    if (this.stage === 'street') return;
+    let nearBar = false;
+    let nearCab = false;
+    const check = (p) => {
+      const pos = p.group.position;
+      if (Math.hypot(pos.x - NAV.wallX, pos.z - NAV.doorZ) < 1.7) nearBar = true;
+      if (Math.hypot(pos.x - NAV.elevator.x, pos.z - NAV.elevator.z) < 1.25) nearCab = true;
+    };
+    for (const av of this.avatars.values()) if (!av.atSeat) check(av);
+    for (const g of this.ghosts) check(g);
+    const toward = (cur, want, speed) => cur + THREE.MathUtils.clamp(want - cur, -speed * dt, speed * dt);
+    this.roof.setDoor(toward(this.roof.doorOpen, nearBar ? 1 : 0, 2.2));
+    if (this.stage === 'roof') this.cab.setOpen(toward(this.cab.open, nearCab || this.cabHold ? 1 : 0, 1.5));
+  }
+
+  #updateAvatars(dt, t) {
+    for (let i = this.ghosts.length - 1; i >= 0; i--) {
+      const g = this.ghosts[i];
+      if (this.#stepAlong(g, dt, WALK_SPEED)) continue;
+      this.roof.group.remove(g.group);
+      this.ghosts.splice(i, 1);
     }
 
     const v = new THREE.Vector3();
@@ -845,17 +846,26 @@ export class BarScene {
     const far = this.camera.position.distanceTo(this.controls.target) > 19;
     this.labelLayer.classList.toggle('far', far);
     this.labelLayer.classList.toggle('compact', far && w < 600);
+    const lobbyCam = this.script || this.view === 'foyer';
     for (const av of this.avatars.values()) {
-      // 앉기 / 숨쉬기 / 말할 때 끄덕임
-      av.pop = Math.min(1, av.pop + dt * 2.5);
-      const e = ease(av.pop);
-      av.group.scale.setScalar(0.6 + 0.4 * e);
-      av.group.position.y = (1 - e) * 0.5;
-      av.talk = Math.max(0, av.talk - dt);
-      const lively = av.talk > 0 || av.speaking ? 1 : 0;
-      av.body.position.y = Math.sin(t * 1.6 + av.seed) * 0.008 + lively * Math.abs(Math.sin(t * 9)) * 0.018;
-      av.head.rotation.y = Math.sin(t * 0.5 + av.seed) * 0.22;
-      av.head.rotation.x = Math.sin(t * 0.8 + av.seed * 2) * 0.05 + lively * Math.sin(t * 9) * 0.07;
+      if (av.atSeat) {
+        // 자리에 앉아서: 숨쉬기, 말할 때 끄덕임
+        av.settle = Math.min(1, av.settle + dt * 4);
+        av.group.position.y = (1 - ease(av.settle)) * 0.1;
+        av.talk = Math.max(0, av.talk - dt);
+        const lively = av.talk > 0 || av.speaking ? 1 : 0;
+        av.body.position.y = av.lift + Math.sin(t * 1.6 + av.seed) * 0.008 + lively * Math.abs(Math.sin(t * 9)) * 0.018;
+        av.head.rotation.y = Math.sin(t * 0.5 + av.seed) * 0.22;
+        av.head.rotation.x = Math.sin(t * 0.8 + av.seed * 2) * 0.05 + lively * Math.sin(t * 9) * 0.07;
+      } else {
+        av.head.rotation.set(0, Math.sin(t * 0.4 + av.seed) * (av.path.length ? 0.05 : 0.3), 0);
+        const wasWalking = av.path.length > 0;
+        const walking = this.#stepAlong(av, dt, WALK_SPEED);
+        if (wasWalking && !walking) {
+          if (av.seatId) this.#sit(av);
+          else av.heading = FACE_DOOR;
+        }
+      }
       av.selfRing.material.opacity = 0.65 + Math.sin(t * 3) * 0.3;
 
       // 음료 등장 / 건배
@@ -863,21 +873,68 @@ export class BarScene {
         av.drinkPop = Math.min(1, av.drinkPop + dt * 3);
         av.drinkGroup.scale.setScalar(ease(av.drinkPop));
       }
-      if (av.cheers > 0) {
+      if (av.cheers > 0 && av.atSeat) {
         av.cheers = Math.max(0, av.cheers - dt);
         const k = Math.sin((1 - av.cheers / 1.3) * Math.PI);
-        const s = SEAT_BY_ID.get(av.seatId);
+        const s = SEAT_BY_ID.get(av.atSeat);
         av.drinkGroup.position.set(s.drinkX - s.face[0] * k * 0.12, TOP_Y + k * 0.42, s.drinkZ - s.face[1] * k * 0.12);
         av.arms[1].rotation.x = -1.18 - k * 0.9;
       }
 
-      // 이름표 위치
+      // 이름표 위치 (로비를 보는 동안에는 벽 너머 바 손님의 이름표를 숨긴다)
       v.set(av.group.position.x, 1.98, av.group.position.z).project(this.camera);
-      const visible = v.z < 1 && Math.abs(v.x) < 1.15 && Math.abs(v.y) < 1.2;
+      const behindWall = lobbyCam && av.group.position.x < NAV.wallX;
+      const visible = !behindWall && v.z < 1 && Math.abs(v.x) < 1.15 && Math.abs(v.y) < 1.2;
       av.tag.style.display = visible ? '' : 'none';
       if (visible) {
         av.tag.style.transform = `translate(${((v.x * 0.5 + 0.5) * w).toFixed(1)}px, ${((-v.y * 0.5 + 0.5) * h).toFixed(1)}px)`;
         av.tag.style.zIndex = String(Math.round((1 - v.z) * 100000));
+      }
+    }
+
+    if (this.follow) this.#followMe();
+  }
+
+  #frame() {
+    const nowMs = performance.now();
+    const elapsed = (nowMs - this.lastFrame) / 1000;
+    this.lastFrame = nowMs;
+    this.#adaptQuality(elapsed);
+    const real = Math.min(elapsed, 0.1);
+    const dt = real * this.fast;
+    const t = (this.time += real);
+
+    for (let i = this.tweens.length - 1; i >= 0; i--) {
+      const tw = this.tweens[i];
+      tw.t += dt;
+      tw.fn(clamp01(tw.t / tw.dur));
+      if (tw.t >= tw.dur) {
+        this.tweens.splice(i, 1);
+        tw.done();
+      }
+    }
+    this.#updateCamera(dt, elapsed, t);
+
+    if (this.stage !== 'street') {
+      for (const st of this.staff) this.#updateStaff(st, real);
+      this.#updateDoors(real);
+      this.#updateAvatars(real, t);
+      // 직원 말풍선 위치
+      const sv = new THREE.Vector3();
+      for (const st of this.staff) {
+        if (st.bubbleEl.hidden) continue;
+        sv.set(st.group.position.x, 1.85, st.group.position.z).project(this.camera);
+        st.tag.style.transform = `translate(${((sv.x * 0.5 + 0.5) * this.size.w).toFixed(1)}px, ${((-sv.y * 0.5 + 0.5) * this.size.h).toFixed(1)}px)`;
+        st.tag.style.zIndex = '200000';
+      }
+      const host = this.roof.host;
+      host.head.rotation.y = Math.sin(t * 0.5) * 0.35;
+      host.body.position.y = Math.sin(t * 1.4) * 0.006;
+      const pulse = 0.55 + Math.sin(t * 4) * 0.35;
+      for (const m of this.roof.seatMarkers.values()) {
+        if (!m.visible) continue;
+        m.material.opacity = pulse;
+        m.scale.setScalar(1.15 + Math.sin(t * 4) * 0.1);
       }
     }
     this.renderer.render(this.scene, this.camera);

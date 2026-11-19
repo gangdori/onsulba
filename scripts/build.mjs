@@ -9,6 +9,8 @@ const copies = [
   ['node_modules/three/build/three.module.js', 'public/vendor/three/build/three.module.js'],
   ['node_modules/three/build/three.core.js', 'public/vendor/three/build/three.core.js'],
   ['node_modules/three/examples/jsm/controls/OrbitControls.js', 'public/vendor/three/examples/jsm/controls/OrbitControls.js'],
+  ['node_modules/three/examples/jsm/environments/RoomEnvironment.js', 'public/vendor/three/examples/jsm/environments/RoomEnvironment.js'],
+  ['node_modules/three/examples/jsm/utils/BufferGeometryUtils.js', 'public/vendor/three/examples/jsm/utils/BufferGeometryUtils.js'],
   ['node_modules/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css', 'public/vendor/pretendard/pretendardvariable-dynamic-subset.css'],
   ['node_modules/pretendard/dist/web/variable/woff2-dynamic-subset', 'public/vendor/pretendard/woff2-dynamic-subset'],
   ['shared', 'public/shared'],

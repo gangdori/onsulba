@@ -6,14 +6,14 @@
     <meta name="theme-color" content="#0c0e15" />
     <title>온술바 — 로그인 없이 바로 앉는 온라인 혼술바</title>
     <meta name="description" content="접속하면 바로 자리에 앉아 옆자리 손님과 채팅·통화로 한잔하는 온라인 혼술바." />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍶</text></svg>" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍸</text></svg>" />
     <link rel="stylesheet" href="/vendor/pretendard/pretendardvariable-dynamic-subset.css" />
     <link rel="stylesheet" href="/css/style.css" />
     <script type="importmap">
       { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
     </script>
   </head>
-  <body data-phase="lobby">
+  <body data-phase="street">
     <div id="app">
       <div id="stage">
         <div id="labels" aria-hidden="true"></div>
@@ -36,9 +36,9 @@
 
       <!-- 입장 카드: 로그인 없이 성별만 고르면 바로 착석 -->
       <section id="entry" class="card" aria-labelledby="entryTitle">
-        <p class="eyebrow">로그인 없이 · 지금 바로</p>
-        <h1 id="entryTitle">오늘은 여기서 <em>한잔</em> 어때요?</h1>
-        <p class="lead">들어오면 바로 자리에 앉아요. 옆자리 손님과 채팅하고, 서로 원하면 통화도 할 수 있어요.</p>
+        <p class="eyebrow">간판 없는 17층 · 로그인 없이</p>
+        <h1 id="entryTitle">아는 사람만 올라가는 <em>루프탑 바</em></h1>
+        <p class="lead">문을 두드리면 엘리베이터가 열려요. 올라가서 자리에 앉으면 옆자리 손님과 채팅하고, 서로 원하면 통화도 할 수 있어요.</p>
 
         <form id="entryForm" autocomplete="off">
           <div class="field">
@@ -60,17 +60,14 @@
           </label>
 
           <div class="field">
-            <span>오늘의 한잔</span>
-            <div class="chips" id="drinkChips" role="radiogroup" aria-label="오늘의 한잔"></div>
-          </div>
-
-          <div class="field">
             <span>옷 색깔</span>
             <div class="swatches" id="swatches" role="radiogroup" aria-label="옷 색깔"></div>
           </div>
 
           </details>
 
+          <p class="wallet-line" id="walletLine"></p>
+          <button type="button" class="link" id="peekMenu">📖 메뉴판 미리 보기</button>
           <button class="primary" id="enterBtn" type="submit" disabled>성별을 선택해 주세요</button>
           <p class="fine">만 19세 이상만 이용할 수 있어요 · 통화는 상대가 수락해야 연결돼요</p>
         </form>
@@ -78,14 +75,21 @@
 
       <!-- 성비 대기 -->
       <section id="waiting" class="card" hidden aria-live="polite">
-        <p class="eyebrow">입장 대기 중</p>
+        <p class="eyebrow">문 앞에서 대기 중</p>
         <h1>내 순서 <em id="queuePos">1</em>번째</h1>
         <p class="lead" id="queueWhy">성비를 맞추는 중이에요.</p>
         <div class="ratio" aria-hidden="true"><div class="ratio-m" id="ratioM"></div><div class="ratio-f" id="ratioF"></div></div>
         <div class="ratio-legend"><span>남 <b id="waitM">0</b>명</span><span>여 <b id="waitF">0</b>명</span></div>
-        <p class="fine">자리가 나면 자동으로 앉혀 드려요. 이 화면을 켜 두세요.</p>
+        <p class="fine">차례가 되면 호스트가 문을 열어 줍니다. 이 화면을 켜 두세요.</p>
         <button class="secondary" id="cancelWait" type="button">대기 취소</button>
       </section>
+
+      <!-- 엘리베이터 안: 층 표시 -->
+      <div id="ride" hidden>
+        <div class="floor-box"><span class="arrow">▲</span><span id="floor">1</span></div>
+        <p id="rideText">17층 루프탑으로 올라가는 중</p>
+        <button type="button" class="ghost" id="skipRide">건너뛰기</button>
+      </div>
 
       <!-- 착석 후: 대화 도크 -->
       <section id="dock" hidden>
@@ -95,6 +99,10 @@
           <span id="callTime"></span>
           <button type="button" id="muteBtn" class="pill" hidden>음소거</button>
           <button type="button" id="hangBtn" class="pill danger">끊기</button>
+        </div>
+        <div id="stay" aria-live="off">
+          <span class="stay-time"><span id="stayLabel">⏳ 남은 시간</span> <b id="timeLeft">00:00</b></span>
+          <span class="stay-coin">🪙 <b id="coins">–</b>코인</span>
         </div>
         <div class="tabs" role="tablist">
           <button type="button" role="tab" data-tab="bar" aria-selected="true"><span class="tab-label">우리 바</span><i class="unread" hidden></i></button>
@@ -109,16 +117,27 @@
         </form>
         <div class="actions">
           <button type="button" id="cheersBtn">🍻 건배</button>
-          <button type="button" id="orderBtn">🍶 한 잔 더</button>
+          <button type="button" id="orderBtn">🙋 직원 부르기</button>
           <button type="button" id="moveBtn">💺 자리 옮기기</button>
         </div>
-        <div id="orderMenu" class="popover" hidden></div>
       </section>
 
       <!-- 손님을 눌렀을 때 -->
       <div id="profile" class="popcard" hidden>
         <div class="who"><i class="avatar-dot" id="pfDot"></i><div><b id="pfName"></b><small id="pfMeta"></small></div></div>
         <div class="row" id="pfActions"></div>
+      </div>
+
+      <!-- 메뉴판 -->
+      <div id="menu" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+        <div class="menu-card">
+          <button type="button" class="menu-close" id="menuClose" aria-label="메뉴판 덮기">✕</button>
+          <p class="menu-brand">ONSULBA · ROOFTOP 17F</p>
+          <h2 id="menuTitle">Cocktail Menu</h2>
+          <p class="menu-sub" id="menuSub"></p>
+          <div id="menuList"></div>
+          <p class="menu-foot" id="menuFoot"></p>
+        </div>
       </div>
 
       <!-- 걸려 온 통화 -->
@@ -136,6 +155,7 @@
 
       <div id="toast" role="status" aria-live="polite" hidden></div>
       <div id="offline" hidden>연결이 끊겼어요. 다시 연결하는 중…</div>
+      <div id="fade" aria-hidden="true"></div>
       <audio id="remoteAudio" autoplay playsinline></audio>
     </div>
     <script type="module" src="/js/main.js"></script>

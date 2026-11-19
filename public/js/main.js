@@ -1,5 +1,5 @@
 // 온술바 클라이언트: 입장 → (성비 대기) → 착석 → 옆자리와 채팅/통화
-import { SEATS, SEAT_BY_ID, neighborSeats, DRINKS, AVATAR_COLORS } from '/shared/layout.js';
+import { SEATS, SEAT_BY_ID, neighborSeats, DRINKS, MENU_SECTIONS, WALLET, AVATAR_COLORS } from '/shared/layout.js';
 import { BarScene } from './scene.js';
 import { Net } from './net.js';
 import { Voice } from './voice.js';
@@ -14,7 +14,8 @@ const el = (tag, cls, text) => {
 };
 const GENDER = { m: '남성', f: '여성' };
 const SIDE = { left: '왼쪽', right: '오른쪽' };
-const drinkOf = (id) => DRINKS.find((d) => d.id === id) || DRINKS[0];
+const drinkOf = (id) => DRINKS.find((d) => d.id === id) || null;
+const MIN_PRICE = Math.min(...DRINKS.map((d) => d.price));
 
 const NICK_A = ['조용한', '수줍은', '느긋한', '말랑한', '담백한', '포근한', '엉뚱한', '나른한', '솔직한', '반짝이는'];
 const NICK_B = ['하이볼', '소주잔', '맥주거품', '안주왕', '올빼미', '퇴근러', '단골', '달빛', '얼음', '레몬'];
@@ -22,7 +23,7 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const randomNick = () => `${pick(NICK_A)} ${pick(NICK_B)}`;
 
 const state = {
-  phase: 'lobby', // lobby | waiting | seated
+  phase: 'street', // street(골목) → elevator → arriving(로비 도착) → waiting(문 앞 대기) | seated
   myId: null,
   mySeat: null,
   profile: loadProfile(),
@@ -35,6 +36,9 @@ const state = {
   blocked: new Set(),
   moveMode: false,
   view: 'bar',
+  wallet: { balance: null, stayUntil: 0, orderBy: 0, skew: 0 }, // 코인, 산 시간의 끝, 첫 주문 마감 (서버 시계 기준)
+  calling: false, // 직원을 불러 놓고 기다리는 중
+  needOrder: false, // 자리에 앉으면 바로 직원을 불러야 하는지
 };
 
 function loadProfile() {
@@ -47,7 +51,6 @@ function loadProfile() {
   return {
     name: typeof saved.name === 'string' && saved.name ? saved.name : randomNick(),
     gender: saved.gender === 'm' || saved.gender === 'f' ? saved.gender : null,
-    drink: DRINKS.some((d) => d.id === saved.drink) ? saved.drink : 'soju',
     color: Number.isInteger(saved.color) && AVATAR_COLORS[saved.color] ? saved.color : Math.floor(Math.random() * AVATAR_COLORS.length),
   };
 }
@@ -82,17 +85,18 @@ function hint(text) {
 function setPhase(phase) {
   state.phase = phase;
   document.body.dataset.phase = phase;
-  $('entry').hidden = phase !== 'lobby';
+  $('entry').hidden = phase !== 'street';
+  $('ride').hidden = phase !== 'elevator';
   $('waiting').hidden = phase !== 'waiting';
   $('dock').hidden = phase !== 'seated';
   $('leaveBtn').hidden = phase !== 'seated';
   $('viewBtn').hidden = phase !== 'seated';
+  scene.setPanel(phase === 'street' || phase === 'waiting' || phase === 'seated');
   if (phase !== 'seated') {
     state.mySeat = null;
     setMoveMode(false);
     closeProfile();
-    $('orderMenu').hidden = true;
-    scene.setView('overview');
+    closeMenu();
   }
 }
 
@@ -101,6 +105,50 @@ function setView(view) {
   const seat = SEAT_BY_ID.get(state.mySeat);
   scene.setView(view === 'bar' && seat ? { bar: seat.bar } : 'overview');
   $('viewBtn').textContent = view === 'bar' ? '전체 보기' : '내 자리';
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/** 장면이 바뀌는 순간을 가리는 암전 */
+async function fade(dark, ms = 450) {
+  const f = $('fade');
+  f.style.transitionDuration = `${ms}ms`;
+  f.classList.toggle('on', dark);
+  await wait(ms);
+}
+
+/** 문을 두드림 → 엘리베이터 → 루프탑 로비에 도착해서 명단 확인(입장 요청) */
+async function goUp() {
+  setPhase('elevator');
+  $('ride').classList.remove('show');
+  sfx.knock();
+  await scene.openStreetDoor();
+  await fade(true);
+  scene.setView('foyer');
+  $('floor').textContent = '1';
+  $('ride').classList.add('show');
+  $('rideText').textContent = '17층 루프탑으로 올라가는 중';
+  const ride = scene.rideElevator((floor) => {
+    $('floor').textContent = floor >= 17 ? 'R' : floor;
+    if (floor >= 17) $('rideText').textContent = '루프탑입니다. 문이 열립니다';
+  });
+  await fade(false, 700);
+  await ride;
+  sfx.ding();
+  if (state.phase !== 'elevator') return;
+  setPhase('arriving');
+  join();
+  await scene.stepOut();
+}
+
+/** 다시 1층 골목으로 */
+async function goStreet() {
+  state.wantsIn = false;
+  if (state.phase === 'street') return;
+  await fade(true, 350);
+  setPhase('street');
+  syncEntry();
+  scene.enterStreet(false);
+  await fade(false, 600);
 }
 
 // ---------- 입장 카드 ----------
@@ -113,18 +161,6 @@ function buildEntry() {
   };
   $('custom').open = window.innerWidth >= 860; // 넓은 화면에서는 꾸미기 옵션을 펼쳐 둔다
 
-  const chips = $('drinkChips');
-  for (const d of DRINKS) {
-    const b = el('button', 'chip', `${d.emoji} ${d.label}`);
-    b.type = 'button';
-    b.setAttribute('role', 'radio');
-    b.dataset.drink = d.id;
-    b.onclick = () => {
-      state.profile.drink = d.id;
-      syncEntry();
-    };
-    chips.appendChild(b);
-  }
   const sw = $('swatches');
   AVATAR_COLORS.forEach((c, i) => {
     const b = el('button', 'swatch');
@@ -150,22 +186,81 @@ function buildEntry() {
     unlockAudio();
     state.profile.name = $('nick').value.trim() || randomNick();
     saveProfile();
-    join();
+    goUp();
   };
+  $('skipRide').onclick = () => scene.skipRide();
+  $('peekMenu').onclick = () => openMenu('view');
   syncEntry();
 }
 
 function syncEntry() {
-  for (const b of $('drinkChips').children) b.setAttribute('aria-checked', String(b.dataset.drink === state.profile.drink));
   [...$('swatches').children].forEach((b, i) => b.setAttribute('aria-checked', String(i === state.profile.color)));
   for (const b of $('genderSeg').children) b.setAttribute('aria-checked', String(b.dataset.gender === state.profile.gender));
   $('sumDot').style.background = AVATAR_COLORS[state.profile.color];
-  const d = drinkOf(state.profile.drink);
-  $('sumText').textContent = `${$('nick').value.trim() || '닉네임'} · ${d.emoji} ${d.label}`;
+  $('sumText').textContent = $('nick').value.trim() || '닉네임';
+  // 산 시간이 남아 있으면 그대로 입장, 없으면 올라가서 3분 안에 첫 잔을 주문해야 한다
+  const w = state.wallet;
+  const { left, paid } = stayInfo();
+  const known = w.balance !== null;
+  const enough = (paid && left > 5) || !known || w.balance >= MIN_PRICE;
+  // 주문 없이 쫓겨난 직후에는 잠시 올라갈 수 없다
+  const sinceKick = Date.now() + w.skew - w.orderBy;
+  const blockedMin = !paid && w.orderBy && sinceKick >= 0 && sinceKick < (w.cooldownMs || 0) ? Math.ceil((w.cooldownMs - sinceKick) / 60000) : 0;
+  $('walletLine').textContent = !known
+    ? `자리에 앉으면 3분 안에 첫 잔을 주문해요. 값은 하루에 한 번 ${WALLET.daily}개씩 채워지는 ${WALLET.unit}으로 내요.`
+    : paid && left > 5
+      ? `⏳ 남은 시간 ${Math.ceil(left / 60)}분 — 바로 올라가서 이어 마셔요 · 🪙 ${w.balance}${WALLET.unit}`
+      : `🪙 ${w.balance}${WALLET.unit} 보유 (하루 한 번 ${WALLET.daily}${WALLET.unit} 충전) · 자리에 앉으면 3분 안에 첫 잔을 주문해요`;
   const btn = $('enterBtn');
-  btn.disabled = !state.profile.gender;
-  btn.textContent = state.profile.gender ? '바로 자리에 앉기' : '성별을 선택해 주세요';
+  btn.disabled = !state.profile.gender || !enough || blockedMin > 0;
+  btn.textContent = !state.profile.gender
+    ? '성별을 선택해 주세요'
+    : !enough
+      ? `${WALLET.unit}이 부족해요 · 내일 다시 채워져요`
+      : blockedMin
+        ? `주문 없이 나가셨어요 · ${blockedMin}분 뒤에 다시 올라갈 수 있어요`
+        : '문 두드리고 올라가기';
 }
+
+// ---------- 코인 · 머무는 시간 ----------
+/** 남은 시간(초). paid 면 산 시간, 아니면 첫 주문 마감까지 */
+function stayInfo() {
+  const now = Date.now() + state.wallet.skew;
+  const paid = (state.wallet.stayUntil - now) / 1000;
+  if (paid > 0) return { left: paid, paid: true };
+  return { left: Math.max(0, (state.wallet.orderBy - now) / 1000), paid: false };
+}
+
+let warned = 0; // 이번 체류에서 이미 알린 단계
+function tickStay() {
+  const { left, paid } = stayInfo();
+  $('coins').textContent = state.wallet.balance ?? '–';
+  $('stayLabel').textContent = paid ? '⏳ 남은 시간' : '⏰ 주문 마감';
+  $('timeLeft').textContent = `${String(Math.floor(left / 60)).padStart(2, '0')}:${String(Math.floor(left % 60)).padStart(2, '0')}`;
+  $('stay').classList.toggle('low', !paid || left < 180);
+  if (state.phase === 'street') syncEntry(); // 입장 카드의 남은 시간·버튼 문구를 최신으로
+  if (state.phase !== 'seated' || left <= 0) return;
+  const say = (step, text) => {
+    if (warned >= step) return;
+    warned = step;
+    toast(text, 5000);
+    sfx.pop();
+  };
+  if (!paid && left <= 60) say(2, '1분 안에 주문하지 않으면 자리에서 일어나야 해요. 직원을 불러 주세요 🙋');
+  else if (paid && left <= 60) say(2, '1분 남았어요. 시간이 끝나면 자리에서 일어나야 해요');
+  else if (paid && left <= 180) say(1, '3분 남았어요. 한 잔 더 주문하면 시간이 늘어나요 🍸');
+}
+setInterval(tickStay, 1000);
+
+net.on('wallet', (m) => {
+  const longer = m.stayUntil > state.wallet.stayUntil || m.orderBy > state.wallet.orderBy;
+  state.wallet = { balance: m.balance, stayUntil: m.stayUntil, orderBy: m.orderBy || 0, cooldownMs: m.cooldownMs || 0, skew: m.now - Date.now() };
+  if (longer) warned = 0;
+  if (m.granted && m.balance > 0) toast(`오늘의 ${WALLET.unit} ${WALLET.daily}개가 채워졌어요 🪙 (보유 ${m.balance})`, 4500);
+  tickStay();
+  syncEntry();
+  if (!$('menu').hidden) renderMenu();
+});
 
 function join() {
   state.wantsIn = true;
@@ -193,11 +288,14 @@ net.on('welcome', (m) => {
     if (m.profile) state.profile = m.profile;
     onSeated(m.seatId, { silent: true });
   } else if (m.status === 'waiting') {
+    // 대기 중에 새로고침: 바로 문 앞 줄로
+    state.wantsIn = true;
+    if (state.phase !== 'waiting') scene.showRoof('foyer');
     setPhase('waiting');
   } else if (state.wantsIn && state.profile.gender) {
     join(); // 서버가 내 자리를 잊었으면(재시작 등) 다시 입장
-  } else {
-    setPhase('lobby');
+  } else if (state.phase === 'waiting' || state.phase === 'seated') {
+    goStreet();
   }
 });
 
@@ -208,6 +306,7 @@ net.on('seated', (m) => {
 
 net.on('waiting', () => {
   setPhase('waiting');
+  scene.setView('foyer');
 });
 
 net.on('queue', (q) => {
@@ -225,12 +324,17 @@ net.on('queue', (q) => {
   $('waitF').textContent = q.counts.f;
 });
 
-net.on('left', () => {
-  state.wantsIn = false;
-  setPhase('lobby');
+net.on('left', async (m) => {
+  await goStreet();
+  if (m.reason === 'timeup') toast('시간이 다 됐어요. 한 잔 더 하려면 다시 올라오세요 🌙', 6000);
+  if (m.reason === 'noorder') toast('3분 안에 주문하지 않아 자리에서 일어났어요. 잠시 뒤에 다시 올라올 수 있어요', 7000);
 });
 
-net.on('error', (m) => toast(m.message || '문제가 생겼어요.'));
+net.on('error', (m) => {
+  toast(m.message || '문제가 생겼어요.', 4500);
+  // 로비까지 올라왔는데 입장이 거절된 경우(코인 부족 등)에는 다시 1층으로
+  if (state.phase === 'arriving' && ['no_coins', 'cooldown', 'duplicate', 'queue_full', 'bad_request'].includes(m.code)) goStreet();
+});
 
 net.on('state', (m) => {
   state.users = m.users;
@@ -241,7 +345,7 @@ net.on('state', (m) => {
   const waiting = m.waiting.m + m.waiting.f;
   $('waitStat').hidden = waiting === 0;
   $('countWait').textContent = waiting;
-  scene.setUsers(m.users, state.myId, m.now);
+  scene.setUsers(m.users, m.queue || [], state.myId, m.now);
   if (state.phase === 'seated') refreshNeighbors();
   if (!$('profile').hidden) renderProfile();
 });
@@ -256,6 +360,7 @@ net.on('chat', (m) => {
 });
 
 net.on('emote', (m) => {
+  if (m.kind === 'call') return scene.summonStaff(m.from); // 직원이 그 자리로 걸어간다
   scene.cheers(m.from);
   const u = state.byId.get(m.from);
   const me = SEAT_BY_ID.get(state.mySeat);
@@ -277,19 +382,34 @@ function onSeated(seatId, { fromQueue, moved, silent } = {}) {
     $('log').dataset.key = '';
     state.prevNeighbors = null;
     state.tab = 'bar';
-    pushLog('bar', { system: true, text: `${seat.bar + 1}번 바에 앉았어요. 주문한 ${drinkOf(state.profile.drink).label}은 직원이 곧 가져다 드려요.` });
+    const paidNow = stayInfo().paid;
+    state.needOrder = !silent && !moved && !paidNow; // 자리에 앉는 순간 직원이 주문을 받으러 온다
+    pushLog('bar', {
+      system: true,
+      text: paidNow ? `${seat.bar + 1}번 바 자리예요. 남은 시간 동안 편히 계세요.` : `${seat.bar + 1}번 바 자리예요. 3분 안에 첫 잔을 주문해 주세요. 앉으면 직원이 주문을 받으러 와요.`,
+    });
   }
   setPhase('seated');
   setMoveMode(false);
-  setView('bar');
+  state.view = 'bar';
+  $('viewBtn').textContent = '전체 보기';
+  if (silent) {
+    // 새로고침으로 돌아온 경우: 연출 없이 바로 내 자리
+    if (firstTime) scene.showRoof({ bar: seat.bar });
+    scene.focusSeat(seatId, true);
+  } else {
+    scene.focusSeat(seatId); // 로비에 있으면 문을 지나는 순간 카메라가 따라 들어간다
+  }
   refreshNeighbors();
   if (silent) return;
   sfx.seated();
   if (fromQueue) {
     navigator.vibrate?.([120, 60, 120]);
-    toast('자리가 났어요! 바로 앉혀 드렸어요 🍶', 4500);
+    toast('자리가 났어요! 호스트가 문을 열어 줍니다 🍶', 4500);
   } else if (moved) {
-    toast(`${seat.bar + 1}번 바로 옮겨 앉았어요`);
+    toast(`${seat.bar + 1}번 바로 걸어가는 중이에요`);
+  } else {
+    toast(`호스트가 문을 열어 줍니다. ${seat.bar + 1}번 바로 안내할게요`, 4000);
   }
 }
 
@@ -406,23 +526,85 @@ $('composer').onsubmit = (e) => {
 
 $('cheersBtn').onclick = () => net.send({ type: 'emote', kind: 'cheers' });
 
-$('orderBtn').onclick = () => {
-  const menu = $('orderMenu');
-  if (!menu.childElementCount) {
-    for (const d of DRINKS) {
-      const b = el('button', 'chip', `${d.emoji} ${d.label}`);
-      b.type = 'button';
-      b.onclick = () => {
-        state.profile.drink = d.id;
-        saveProfile();
+// ---------- 메뉴판 · 직원 부르기 ----------
+let menuMode = 'view'; // view = 구경만, order = 직원에게 주문
+let callTimer;
+
+/** 실제 바의 메뉴판처럼: 장(章)별로 이름 · 재료 · 값. 한 잔 = 코인 차감 + 머무는 시간 */
+function renderMenu() {
+  const ordering = menuMode === 'order';
+  const balance = state.wallet.balance ?? 0;
+  $('menuSub').textContent = ordering ? '“주문하시겠어요?” — 한 잔을 골라 주세요' : '한 잔마다 머무는 시간이 더해집니다';
+  const list = $('menuList');
+  list.replaceChildren();
+  for (const sec of MENU_SECTIONS) {
+    const head = el('div', 'menu-section');
+    head.append(el('span', '', sec.title), el('small', '', sec.ko));
+    list.appendChild(head);
+    for (const d of DRINKS.filter((x) => x.section === sec.id)) {
+      const row = el('button', 'menu-row');
+      row.type = 'button';
+      row.disabled = !ordering || balance < d.price;
+      row.dataset.drink = d.id;
+      const line = el('div', 'menu-line');
+      line.append(el('b', '', d.label), el('i', 'dots'), el('span', 'price', `${d.price}`));
+      const sub = el('div', 'menu-desc');
+      sub.append(el('em', '', d.en), el('span', '', d.note), el('span', 'time', `+${d.minutes}분`));
+      row.append(line, sub);
+      row.onclick = () => {
         net.send({ type: 'order', drink: d.id });
-        menu.hidden = true;
-        toast(`${d.label} 주문했어요. 직원이 가져다 드릴게요.`);
+        closeMenu(true);
+        toast(`${d.label} 주문 받았습니다. +${d.minutes}분, 금방 가져다 드릴게요 🍸`, 4000);
       };
-      menu.appendChild(b);
+      list.appendChild(row);
     }
   }
-  menu.hidden = !menu.hidden;
+  $('menuFoot').textContent = `값은 ${WALLET.unit}으로 · 보유 ${balance}${WALLET.unit} · 하루에 한 번 ${WALLET.daily}${WALLET.unit}씩 채워집니다`;
+}
+
+function openMenu(mode) {
+  menuMode = mode;
+  renderMenu();
+  $('menu').hidden = false;
+}
+
+function closeMenu(ordered = false) {
+  const wasOrdering = !$('menu').hidden && menuMode === 'order';
+  $('menu').hidden = true;
+  clearTimeout(callTimer);
+  if (state.calling || wasOrdering) {
+    state.calling = false;
+    if (!ordered) scene.dismissStaff(state.myId); // 주문 없이 덮으면 직원이 물러난다
+  }
+  syncCallBtn();
+}
+
+function syncCallBtn() {
+  $('orderBtn').textContent = state.calling ? '직원이 오는 중…' : '🙋 직원 부르기';
+  $('orderBtn').disabled = state.calling;
+}
+
+/** 직원을 부른다 → 직원이 내 자리로 걸어와 메뉴판을 건넨다 */
+function callStaff() {
+  if (state.calling || state.phase !== 'seated') return;
+  state.calling = true;
+  syncCallBtn();
+  net.send({ type: 'emote', kind: 'call' });
+  clearTimeout(callTimer);
+  callTimer = setTimeout(() => state.calling && openMenu('order'), 14000); // 직원이 늦어도 메뉴판은 열린다
+}
+scene.onStaffArrived = () => {
+  if (state.calling && state.phase === 'seated') openMenu('order');
+};
+scene.onSelfSeated = () => {
+  if (!state.needOrder) return;
+  state.needOrder = false;
+  callStaff();
+};
+$('orderBtn').onclick = callStaff;
+$('menuClose').onclick = () => closeMenu();
+$('menu').onclick = (e) => {
+  if (e.target === $('menu')) closeMenu();
 };
 
 function setMoveMode(on) {
@@ -490,7 +672,7 @@ function renderProfile() {
   const seat = SEAT_BY_ID.get(u.seatId);
   $('pfDot').style.background = AVATAR_COLORS[u.color];
   $('pfName').textContent = u.id === state.myId ? `${u.name} (나)` : u.name;
-  const meta = [GENDER[u.gender], drinkOf(u.drink).label, `${seat.bar + 1}번 바`];
+  const meta = [GENDER[u.gender], drinkOf(u.drink)?.label || '주문 전', `${seat.bar + 1}번 바`];
   if (u.busy) meta.push('통화 중');
   $('pfMeta').textContent = meta.join(' · ');
   if (u.id === state.myId) return;
@@ -637,7 +819,6 @@ voice.addEventListener('level', (e) => {
 
 // 팝오버 바깥을 누르면 닫기
 document.addEventListener('pointerdown', (e) => {
-  if (!$('orderMenu').hidden && !e.target.closest('#orderMenu, #orderBtn')) $('orderMenu').hidden = true;
   if (!$('profile').hidden && !e.target.closest('#profile, #stage')) closeProfile();
 });
 
@@ -654,4 +835,4 @@ if (window.visualViewport) {
 }
 
 buildEntry();
-setPhase('lobby');
+setPhase('street');

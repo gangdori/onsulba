@@ -7,6 +7,19 @@ export class Net extends EventTarget {
       this.session = crypto.randomUUID();
       sessionStorage.setItem('onsulba.session', this.session);
     }
+    // 지갑(코인)은 기기 단위: 기기 ID 와, 서버가 서명해 준 지갑 사본을 보관한다
+    this.device = localStorage.getItem('onsulba.device');
+    if (!this.device) {
+      this.device = crypto.randomUUID();
+      localStorage.setItem('onsulba.device', this.device);
+    }
+    this.on('wallet', (m) => {
+      try {
+        localStorage.setItem('onsulba.wallet', JSON.stringify(m.token));
+      } catch {
+        /* 저장 불가(시크릿 모드 등) */
+      }
+    });
     this.retry = 0;
     this.connected = false;
     this.outbox = []; // 재연결 중에 보낸 메시지는 잠시 모아 둔다
@@ -18,7 +31,13 @@ export class Net extends EventTarget {
     const ws = (this.ws = new WebSocket(`${proto}://${location.host}/ws`));
     ws.onopen = () => {
       this.retry = 0;
-      ws.send(JSON.stringify({ type: 'hello', session: this.session }));
+      let wallet = null;
+      try {
+        wallet = JSON.parse(localStorage.getItem('onsulba.wallet') || 'null');
+      } catch {
+        /* 깨진 사본은 보내지 않는다 */
+      }
+      ws.send(JSON.stringify({ type: 'hello', session: this.session, device: this.device, wallet }));
     };
     ws.onmessage = (e) => {
       let msg;

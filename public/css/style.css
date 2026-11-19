@@ -75,6 +75,7 @@ button:disabled {
   min-height: 0;
   overflow: hidden;
   touch-action: none;
+  isolation: isolate; /* 이름표의 z-index 가 패널 위로 올라오지 않게 */
 }
 #stage canvas {
   display: block;
@@ -103,12 +104,11 @@ button:disabled {
   gap: 5px;
   padding: 3px 9px 3px 7px;
   border-radius: 999px;
-  background: rgba(12, 14, 21, 0.72);
+  background: rgba(12, 14, 21, 0.84);
   border: 1px solid var(--line);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
-  backdrop-filter: blur(6px);
 }
 .tag .dot {
   width: 7px;
@@ -118,10 +118,6 @@ button:disabled {
 }
 .tag[data-gender='f'] .dot {
   background: var(--female);
-}
-/* 입장 전(구경/대기)에는 이름표를 숨긴다 */
-body:not([data-phase='seated']) .tag {
-  visibility: hidden;
 }
 .tag.me .plate {
   background: var(--amber);
@@ -218,6 +214,66 @@ body:not([data-phase='seated']) .tag {
   font-size: 13px;
   white-space: nowrap;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* ---------- 엘리베이터 층 표시 · 암전 ---------- */
+#ride {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(64px + var(--safe-t)) 16px calc(28px + var(--safe-b));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s;
+}
+#ride.show {
+  opacity: 1;
+}
+.floor-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 132px;
+  justify-content: center;
+  padding: 6px 22px;
+  border-radius: 14px;
+  background: rgba(8, 8, 10, 0.78);
+  border: 1px solid rgba(243, 168, 92, 0.45);
+  color: var(--amber);
+  font-size: 44px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 18px rgba(243, 168, 92, 0.7);
+}
+.floor-box .arrow {
+  font-size: 20px;
+  animation: blink 0.9s infinite;
+}
+#ride p {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.75);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+}
+#ride .ghost {
+  margin-top: auto;
+  pointer-events: auto;
+}
+#fade {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s ease;
+}
+#fade.on {
+  opacity: 1;
 }
 
 /* ---------- 상단 바 ---------- */
@@ -655,6 +711,204 @@ input:disabled {
   color: #2a0808;
 }
 
+/* 남은 시간 · 코인 */
+#stay {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 7px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+#stay b {
+  color: var(--text);
+  font-weight: 700;
+}
+#stay.low {
+  border-color: rgba(255, 107, 107, 0.6);
+  background: rgba(255, 107, 107, 0.12);
+}
+#stay.low .stay-time b {
+  color: var(--danger);
+}
+.wallet-line {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+.chip small {
+  font-weight: 700;
+  color: var(--amber);
+  opacity: 0.85;
+}
+/* 메뉴판: 종이에 인쇄한 칵테일 메뉴 */
+.menu-card {
+  position: relative;
+  width: min(440px, 100%);
+  max-height: min(86dvh, 720px);
+  overflow-y: auto;
+  padding: 30px 26px 22px;
+  border-radius: 6px;
+  background: linear-gradient(160deg, #f6eedc, #eadfc6 60%, #e2d5b8);
+  color: #2a1d14;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), inset 0 0 0 1px rgba(90, 60, 30, 0.35), inset 0 0 0 7px #f3ead6, inset 0 0 0 8px rgba(90, 60, 30, 0.5);
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Nanum Myeongjo', AppleMyungjo, serif;
+  animation: drop-card 0.25s ease-out;
+}
+@keyframes drop-card {
+  from {
+    opacity: 0;
+    transform: translateY(14px) rotate(-1deg);
+  }
+}
+.menu-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: #5a4030;
+  font-size: 15px;
+}
+.menu-close:hover {
+  background: rgba(90, 60, 30, 0.12);
+}
+.menu-brand {
+  margin: 0;
+  text-align: center;
+  font-size: 10.5px;
+  letter-spacing: 0.34em;
+  color: #8a6a48;
+}
+.menu-card h2 {
+  margin: 4px 0 2px;
+  text-align: center;
+  font-size: 30px;
+  font-weight: 500;
+  font-style: italic;
+  letter-spacing: 0.01em;
+}
+.menu-sub {
+  margin: 0 0 6px;
+  text-align: center;
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: #6b513b;
+}
+.menu-section {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  margin: 16px 0 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(90, 60, 30, 0.3);
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #8a5a2c;
+}
+.menu-section small {
+  font-family: var(--font);
+  letter-spacing: 0;
+  color: #9a8266;
+}
+.menu-row {
+  display: block;
+  width: 100%;
+  padding: 8px 6px;
+  border-radius: 4px;
+  text-align: left;
+  color: inherit;
+}
+.menu-row:not(:disabled):hover {
+  background: rgba(138, 90, 44, 0.13);
+}
+#menu .menu-row:disabled {
+  cursor: default;
+}
+.menu-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.menu-line b {
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 700;
+}
+.menu-line .dots {
+  flex: 1;
+  border-bottom: 1.5px dotted rgba(90, 60, 30, 0.45);
+  transform: translateY(-3px);
+}
+.menu-line .price {
+  font-size: 18px;
+  font-weight: 600;
+}
+.menu-line .price::after {
+  content: ' 코인';
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 500;
+  color: #8a6a48;
+}
+.menu-desc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 1px;
+  font-size: 12px;
+  color: #6b513b;
+}
+.menu-desc em {
+  font-size: 13px;
+}
+.menu-desc span {
+  font-family: var(--font);
+}
+.menu-desc .time {
+  margin-left: auto;
+  font-weight: 700;
+  color: #8a5a2c;
+}
+.menu-foot {
+  margin: 16px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid rgba(90, 60, 30, 0.3);
+  text-align: center;
+  font-family: var(--font);
+  font-size: 11.5px;
+  color: #8a6a48;
+}
+.link {
+  display: block;
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.actions button:disabled {
+  opacity: 0.6;
+}
+/* 직원 말풍선 */
+.tag.staff .bubble {
+  bottom: 6px;
+  background: #1c1f2b;
+  color: #ffe1bd;
+  border: 1px solid rgba(243, 168, 92, 0.6);
+}
+
 .tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -814,7 +1068,9 @@ input:disabled {
   bottom: calc(58px + var(--safe-b));
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 2px;
+  max-height: min(60dvh, 470px);
+  overflow-y: auto;
   padding: 12px;
   border-radius: 16px;
   background: #1c1f2b;

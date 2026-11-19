@@ -119,6 +119,11 @@ export class Bar {
     return { position: q.indexOf(id) + 1, total: q.length, reason: this.admission(user.gender).reason || 'ratio' };
   }
 
+  /** 대기 중인 손님 전체를 온 순서대로 (문 앞에 서는 줄의 순서) */
+  waitingOrder() {
+    return [...this.queue.m, ...this.queue.f].sort((a, b) => this.users.get(a).queuedAt - this.users.get(b).queuedAt);
+  }
+
   seatOf(id) {
     return this.users.get(id)?.seatId ?? null;
   }
